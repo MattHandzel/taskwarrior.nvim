@@ -1,0 +1,464 @@
+#!/usr/bin/env python3
+"""taskmd — Taskwarrior <-> Markdown CLI bridge."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+from datetime import datetime, timezone
+from typing import Any
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+KNOWN_FIELDS = ("project", "priority", "due", "scheduled", "recur", "wait", "until", "effort")
+FIELD_RE = re.compile(r"\b(" + "|".join(KNOWN_FIELDS) + r"):(\S+)")
+TAG_RE = re.compile(r"\+(\w+)")
+UUID_COMMENT_RE = re.compile(r"<!--\s*uuid:([0-9a-fA-F]{8})\s*-->")
+TASK_LINE_RE = re.compile(r"^- \[([ x])\] (.+)$")
+HEADER_RE = re.compile(
+    r"<!--\s*taskmd filter:\s*(.*?)\s*\|"
+    r"\s*sort:\s*(.*?)\s*\|"
+    r"(?:\s*group:\s*(.*?)\s*\|)?"
+    r"\s*rendered_at:\s*(.*?)\s*-->",
+    re.IGNORECASE,
+)
+
+# ---------------------------------------------------------------------------
+# Taskwarrior adapter
+# ---------------------------------------------------------------------------
+
+BASE_RC = ["rc.bulk=0", "rc.confirmation=off"]
+
+
+def _run(args: list[str], check: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(args, capture_output=True, text=True, check=check)
+
+
+def tw_export(filter_args: list[str]) -> list[dict]:
+    cmd = ["task"] + BASE_RC + ["rc.json.array=on"] + filter_args + ["export"]
+    result = _run(cmd, check=False)
+    if result.returncode not in (0, 1):
+        raise RuntimeError(f"task export failed: {result.stderr.strip()}")
+    text = result.stdout.strip()
+    if not text:
+        return []
+    return json.loads(text)
+
+
+def tw_add(desc: str, fields: dict) -> str:
+    parts = [desc] + _fields_to_args(fields)
+    cmd = ["task"] + BASE_RC + ["add"] + parts
+    result = _run(cmd, check=False)
+    output = result.stdout + result.stderr
+    m = re.search(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", output, re.I)
+    return m.group(0) if m else ""
+
+
+def tw_modify(uuid: str, fields: dict) -> None:
+    parts = _fields_to_args(fields)
+    if not parts:
+        return
+    cmd = ["task"] + BASE_RC + [uuid, "modify"] + parts
+    _run(cmd, check=False)
+
+
+def tw_done(uuid: str) -> None:
+    cmd = ["task"] + BASE_RC + [uuid, "done"]
+    _run(cmd, check=False)
+
+
+def tw_delete(uuid: str) -> None:
+    cmd = ["task"] + BASE_RC + [uuid, "delete"]
+    _run(cmd, check=False)
+
+
+def tw_undo() -> None:
+    cmd = ["task"] + BASE_RC + ["undo"]
+    _run(cmd, check=False)
+
+
+def tw_completions() -> dict:
+    projects_r = _run(["task", "_projects"], check=False)
+    tags_r = _run(["task", "_tags"], check=False)
+    projects = [p for p in projects_r.stdout.splitlines() if p.strip()]
+    tags = [t for t in tags_r.stdout.splitlines() if t.strip()]
+    return {"projects": projects, "tags": tags, "fields": list(KNOWN_FIELDS)}
+
+
+def _fields_to_args(fields: dict) -> list[str]:
+    args = []
+    for key, val in fields.items():
+        if key == "tags":
+            for tag in val:
+                args.append(f"+{tag}")
+        elif key == "status":
+            pass  # status is handled via done/delete commands
+        else:
+            args.append(f"{key}:{val}")
+    return args
+
+
+# ---------------------------------------------------------------------------
+# Markdown parser / serializer
+# ---------------------------------------------------------------------------
+
+def parse_task_line(line: str) -> dict | None:
+    """Parse a markdown task line into a task dict. Returns None if not a task line."""
+    m = TASK_LINE_RE.match(line.rstrip())
+    if not m:
+        return None
+
+    status_char, rest = m.group(1), m.group(2)
+    status = "completed" if status_char == "x" else "pending"
+
+    # Extract UUID comment from the end
+    uuid_match = UUID_COMMENT_RE.search(rest)
+    short_uuid = uuid_match.group(1) if uuid_match else None
+    if uuid_match:
+        rest = rest[: uuid_match.start()].rstrip()
+
+    # Parse from right to left: extract tags and fields, leaving description
+    tokens = rest.split()
+    fields: dict[str, Any] = {}
+    tags: list[str] = []
+    desc_end = len(tokens)
+
+    for i in range(len(tokens) - 1, -1, -1):
+        tok = tokens[i]
+        field_m = re.match(r"^(" + "|".join(KNOWN_FIELDS) + r"):(\S+)$", tok)
+        tag_m = re.match(r"^\+(\w+)$", tok)
+        if field_m:
+            fields[field_m.group(1)] = field_m.group(2)
+            desc_end = i
+        elif tag_m:
+            tags.append(tag_m.group(1))
+            desc_end = i
+        else:
+            break
+
+    description = " ".join(tokens[:desc_end])
+    if tags:
+        fields["tags"] = sorted(tags)
+
+    task: dict[str, Any] = {
+        "status": status,
+        "description": description,
+    }
+    task.update(fields)
+    if short_uuid:
+        task["_short_uuid"] = short_uuid
+
+    return task
+
+
+def serialize_task_line(task: dict, fields_filter: list[str] | None = None) -> str:
+    """Serialize a task dict to a markdown line."""
+    status_char = "x" if task.get("status") == "completed" else " "
+    desc = task.get("description", "")
+
+    parts = [desc]
+
+    def include(f: str) -> bool:
+        return fields_filter is None or f in fields_filter
+
+    for field in KNOWN_FIELDS:
+        if field in task and include(field):
+            parts.append(f"{field}:{task[field]}")
+
+    for tag in sorted(task.get("tags", [])):
+        if include("tags"):
+            parts.append(f"+{tag}")
+
+    line = f"- [{status_char}] {' '.join(parts)}"
+
+    uuid = task.get("uuid", "")
+    if uuid:
+        line += f" <!-- uuid:{uuid[:8]} -->"
+
+    return line
+
+
+# ---------------------------------------------------------------------------
+# Render command
+# ---------------------------------------------------------------------------
+
+def cmd_render(args: argparse.Namespace) -> None:
+    filter_args = args.filter or []
+    sort_spec = args.sort or "urgency-"
+    group_field = args.group
+    fields_filter = [f.strip() for f in args.fields.split(",")] if args.fields else None
+
+    tasks = tw_export(filter_args)
+
+    # Sort
+    descending = sort_spec.endswith("-")
+    sort_field = sort_spec.rstrip("+-")
+
+    def sort_key(t: dict) -> tuple:
+        val = t.get(sort_field)
+        missing = val is None
+        if isinstance(val, (int, float)):
+            return (missing, -val if descending else val, "")
+        return (missing, 0, str(val) if not missing else "")
+
+    tasks.sort(key=sort_key, reverse=False)
+
+    rendered_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    filter_str = " ".join(filter_args)
+    group_part = f" | group: {group_field}" if group_field else ""
+    header = f"<!-- taskmd filter: {filter_str} | sort: {sort_spec}{group_part} | rendered_at: {rendered_at} -->"
+
+    lines = [header, "", f"# Tasks: {filter_str}", ""]
+
+    if group_field:
+        groups: dict[str, list[dict]] = {}
+        for task in tasks:
+            key = str(task.get(group_field) or "(none)")
+            groups.setdefault(key, []).append(task)
+
+        for group_val, group_tasks in groups.items():
+            lines.append(f"## {group_val}")
+            lines.append("")
+            for task in group_tasks:
+                lines.append(serialize_task_line(task, fields_filter))
+            lines.append("")
+    else:
+        for task in tasks:
+            lines.append(serialize_task_line(task, fields_filter))
+
+    print("\n".join(lines))
+
+
+# ---------------------------------------------------------------------------
+# Diff engine
+# ---------------------------------------------------------------------------
+
+def compute_diff(
+    parsed_lines: list[dict],
+    base_tasks: list[dict],
+    on_delete: str = "done",
+) -> list[dict]:
+    uuid_map: dict[str, dict] = {t["uuid"]: t for t in base_tasks if "uuid" in t}
+    short_to_full: dict[str, str] = {v[:8]: v for v in uuid_map}
+    seen: set[str] = set()
+    actions: list[dict] = []
+
+    for line_task in parsed_lines:
+        short = line_task.get("_short_uuid")
+        full_uuid = short_to_full.get(short) if short else None
+
+        if full_uuid and full_uuid in seen:
+            # Duplicate — treat as new task
+            clean = {k: v for k, v in line_task.items() if not k.startswith("_") and k != "status" and k != "description"}
+            actions.append({"type": "add", "description": line_task.get("description", ""), "fields": clean})
+            continue
+
+        if full_uuid:
+            seen.add(full_uuid)
+            base = uuid_map[full_uuid]
+            task_fields = {k: v for k, v in line_task.items() if not k.startswith("_") and k != "status" and k != "description"}
+
+            # Check status change
+            new_status = line_task.get("status", "pending")
+            old_status = base.get("status", "pending")
+
+            if new_status == "completed" and old_status == "pending":
+                actions.append({"type": "done", "uuid": full_uuid, "fields": {}})
+            elif new_status == "pending" and old_status == "completed":
+                # Re-open: modify status back — taskwarrior doesn't support this directly,
+                # we emit a modify with annotation; best-effort
+                actions.append({"type": "modify", "uuid": full_uuid, "fields": {"status": "pending"}})
+
+            # Check field changes
+            changed: dict[str, Any] = {}
+            for field, val in task_fields.items():
+                if str(base.get(field, "")) != str(val):
+                    changed[field] = val
+            # Check description change
+            if line_task.get("description", "") != base.get("description", ""):
+                changed["description"] = line_task["description"]
+
+            if changed:
+                actions.append({"type": "modify", "uuid": full_uuid, "fields": changed})
+        else:
+            # New task (no UUID or unrecognized UUID)
+            clean = {k: v for k, v in line_task.items() if not k.startswith("_") and k != "status" and k != "description"}
+            actions.append({"type": "add", "description": line_task.get("description", ""), "fields": clean})
+
+    # Tasks in base that were not seen
+    for full_uuid, base_task in uuid_map.items():
+        if full_uuid not in seen:
+            if on_delete == "delete":
+                actions.append({"type": "delete", "uuid": full_uuid, "fields": {}})
+            else:
+                actions.append({"type": "done", "uuid": full_uuid, "fields": {}})
+
+    return actions
+
+
+# ---------------------------------------------------------------------------
+# Apply command
+# ---------------------------------------------------------------------------
+
+def cmd_apply(args: argparse.Namespace) -> None:
+    try:
+        with open(args.file, "r") as fh:
+            content = fh.read()
+    except OSError as e:
+        _fatal(f"cannot read file: {e}")
+
+    lines = content.splitlines()
+
+    # Extract header
+    filter_args: list[str] = []
+    rendered_at: str | None = None
+    sort_spec = "urgency-"
+    group_field: str | None = None
+
+    for line in lines:
+        hm = HEADER_RE.search(line)
+        if hm:
+            filter_str = hm.group(1).strip()
+            filter_args = filter_str.split() if filter_str else []
+            sort_spec = hm.group(2).strip()
+            group_field = hm.group(3).strip() if hm.group(3) else None
+            rendered_at = hm.group(4).strip()
+            break
+
+    # Parse task lines
+    parsed_lines = []
+    for line in lines:
+        task = parse_task_line(line)
+        if task:
+            parsed_lines.append(task)
+
+    # Get base state
+    base_tasks = tw_export(filter_args)
+
+    # Conflict check
+    conflicts: list[str] = []
+    if not args.force and rendered_at:
+        try:
+            rendered_dt = datetime.fromisoformat(rendered_at.replace("Z", "+00:00"))
+            for task in base_tasks:
+                mod = task.get("modified", "")
+                if mod:
+                    mod_clean = re.sub(r"T(\d{6})Z$", lambda m: "T" + m.group(1)[:2] + ":" + m.group(1)[2:4] + ":" + m.group(1)[4:6] + "+00:00", mod)
+                    try:
+                        mod_dt = datetime.fromisoformat(mod_clean)
+                        if mod_dt > rendered_dt:
+                            conflicts.append(task.get("uuid", "unknown"))
+                    except ValueError:
+                        pass
+        except ValueError:
+            pass
+
+    diff = compute_diff(parsed_lines, base_tasks, on_delete=args.on_delete)
+
+    if args.dry_run:
+        print(json.dumps({"actions": diff, "conflicts": conflicts}, indent=2))
+        return
+
+    summary = {"added": 0, "modified": 0, "completed": 0, "deleted": 0, "errors": [], "action_count": len(diff), "conflicts": conflicts}
+
+    # Execute: adds first, then modifies, then dones, then deletes
+    for action_type in ("add", "modify", "done", "delete"):
+        for action in diff:
+            if action["type"] != action_type:
+                continue
+            try:
+                if action_type == "add":
+                    tw_add(action["description"], action["fields"])
+                    summary["added"] += 1
+                elif action_type == "modify":
+                    fields = dict(action["fields"])
+                    desc = fields.pop("description", None)
+                    if desc:
+                        tw_modify(action["uuid"], {"description": desc, **fields})
+                    else:
+                        tw_modify(action["uuid"], fields)
+                    summary["modified"] += 1
+                elif action_type == "done":
+                    tw_done(action["uuid"])
+                    summary["completed"] += 1
+                elif action_type == "delete":
+                    tw_delete(action["uuid"])
+                    summary["deleted"] += 1
+            except Exception as e:
+                summary["errors"].append({"action": action, "error": str(e)})
+
+    print(json.dumps(summary, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# Completions command
+# ---------------------------------------------------------------------------
+
+def cmd_completions(_args: argparse.Namespace) -> None:
+    data = tw_completions()
+    print(json.dumps(data))
+
+
+# ---------------------------------------------------------------------------
+# CLI plumbing
+# ---------------------------------------------------------------------------
+
+def _fatal(msg: str) -> None:
+    print(json.dumps({"error": msg}))
+    sys.exit(1)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="taskmd",
+        description="Taskwarrior <-> Markdown bridge",
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    # render
+    render_p = sub.add_parser("render", help="Export tasks as markdown")
+    render_p.add_argument("filter", nargs="*", help="Taskwarrior filter args")
+    render_p.add_argument("--sort", default="urgency-", help="Sort field (e.g. urgency-, due+)")
+    render_p.add_argument("--fields", default=None, help="Comma-separated fields to render")
+    render_p.add_argument("--group", default=None, help="Group tasks by this field")
+
+    # apply
+    apply_p = sub.add_parser("apply", help="Sync markdown edits back to Taskwarrior")
+    apply_p.add_argument("file", help="Markdown file to apply")
+    apply_p.add_argument("--dry-run", action="store_true", help="Print actions without executing")
+    apply_p.add_argument("--on-delete", choices=["done", "delete"], default="done",
+                         help="Action for tasks removed from markdown")
+    apply_p.add_argument("--force", action="store_true", help="Skip conflict detection")
+
+    # completions
+    sub.add_parser("completions", help="Output JSON of projects, tags, fields")
+
+    return parser
+
+
+def main() -> None:
+    parser = build_parser()
+    args = parser.parse_args()
+
+    if args.command == "render":
+        cmd_render(args)
+    elif args.command == "apply":
+        cmd_apply(args)
+    elif args.command == "completions":
+        cmd_completions(args)
+    else:
+        parser.print_help()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        print(json.dumps({"error": str(e)}))
+        sys.exit(1)
