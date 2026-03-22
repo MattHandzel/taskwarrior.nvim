@@ -2,7 +2,7 @@
 
 Edit your Taskwarrior tasks as markdown. Inspired by oil.nvim.
 
-![demo](assets/demo.gif)
+![demo](demo/demo.gif)
 
 ## Features
 
