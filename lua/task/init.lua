@@ -192,6 +192,15 @@ local function setup_buf_autocmds(bufnr)
       M._on_write(bufnr)
     end,
   })
+
+  vim.api.nvim_create_autocmd("BufWinEnter", {
+    buffer = bufnr,
+    group = group,
+    callback = function()
+      vim.wo[0].conceallevel = 3
+      vim.wo[0].concealcursor = "nvic"
+    end,
+  })
 end
 
 -- ---------------------------------------------------------------------------
@@ -320,8 +329,6 @@ function M.open(filter_str)
   local bufnr = vim.api.nvim_create_buf(true, false)
   vim.bo[bufnr].buftype = "acwrite"
   vim.bo[bufnr].filetype = "taskmd"
-  vim.bo[bufnr].conceallevel = 3
-  vim.bo[bufnr].concealcursor = "nvic"
 
   set_buf_lines(bufnr, out)
   vim.bo[bufnr].modified = false
@@ -335,6 +342,8 @@ function M.open(filter_str)
   setup_buf_autocmds(bufnr)
 
   vim.api.nvim_win_set_buf(0, bufnr)
+  vim.wo[0].conceallevel = 3
+  vim.wo[0].concealcursor = "nvic"
   vim.api.nvim_buf_set_name(bufnr, "Tasks: " .. filter_str)
 end
 
