@@ -4,7 +4,7 @@ M.defaults = {
   on_delete = "done",   -- "done" or "delete" when lines are removed
   confirm = true,       -- show confirmation dialog before applying
   sort = "urgency-",    -- default sort
-  group = nil,          -- default group field
+  group = "project",    -- default group field (nil to disable)
   fields = nil,         -- fields to show (nil = all)
   taskmd_path = nil,    -- path to taskmd binary (auto-detected if nil)
 }

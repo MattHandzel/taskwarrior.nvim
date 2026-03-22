@@ -27,6 +27,62 @@ HEADER_RE = re.compile(
     r"\s*rendered_at:\s*(.*?)\s*-->",
     re.IGNORECASE,
 )
+GROUP_HEADER_RE = re.compile(r"^## (.+)$")
+
+# Taskwarrior ISO date format: 20260322T134834Z
+TW_DATE_RE = re.compile(r"^\d{8}T\d{6}Z$")
+
+# ---------------------------------------------------------------------------
+# Date formatting
+# ---------------------------------------------------------------------------
+
+def tw_date_to_human(val: str) -> str:
+    """Convert Taskwarrior ISO date (20260322T134834Z) to YYYY-MM-DD."""
+    if TW_DATE_RE.match(val):
+        return f"{val[:4]}-{val[4:6]}-{val[6:8]}"
+    return val
+
+
+def human_date_to_tw(val: str) -> str:
+    """Convert YYYY-MM-DD back to Taskwarrior format. Pass through if already TW format."""
+    if TW_DATE_RE.match(val):
+        return val
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", val)
+    if m:
+        return f"{m.group(1)}{m.group(2)}{m.group(3)}T000000Z"
+    return val
+
+
+def format_effort(val: str) -> str:
+    """Convert ISO 8601 duration to human-readable. PT30M -> 30m, PT2H -> 2h, PT1H30M -> 1h30m."""
+    m = re.match(r"^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$", val, re.I)
+    if not m:
+        return val
+    h, mi, s = m.group(1), m.group(2), m.group(3)
+    parts = []
+    if h: parts.append(f"{h}h")
+    if mi: parts.append(f"{mi}m")
+    if s: parts.append(f"{s}s")
+    return "".join(parts) or val
+
+
+def parse_effort(val: str) -> str:
+    """Convert human effort (30m, 2h, 1h30m) back to ISO 8601 duration."""
+    if val.startswith("PT"):
+        return val
+    m = re.match(r"^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$", val, re.I)
+    if not m or not any(m.groups()):
+        return val
+    h, mi, s = m.group(1), m.group(2), m.group(3)
+    result = "PT"
+    if h: result += f"{h}H"
+    if mi: result += f"{mi}M"
+    if s: result += f"{s}S"
+    return result
+
+
+# Fields that hold dates
+DATE_FIELDS = {"due", "scheduled", "wait", "until"}
 
 # ---------------------------------------------------------------------------
 # Taskwarrior adapter
@@ -97,7 +153,11 @@ def _fields_to_args(fields: dict) -> list[str]:
             for tag in val:
                 args.append(f"+{tag}")
         elif key == "status":
-            pass  # status is handled via done/delete commands
+            pass
+        elif key in DATE_FIELDS:
+            args.append(f"{key}:{human_date_to_tw(val)}")
+        elif key == "effort":
+            args.append(f"effort:{parse_effort(val)}")
         else:
             args.append(f"{key}:{val}")
     return args
@@ -133,7 +193,14 @@ def parse_task_line(line: str) -> dict | None:
         field_m = re.match(r"^(" + "|".join(KNOWN_FIELDS) + r"):(\S+)$", tok)
         tag_m = re.match(r"^\+(\w+)$", tok)
         if field_m:
-            fields[field_m.group(1)] = field_m.group(2)
+            fname, fval = field_m.group(1), field_m.group(2)
+            # Convert human dates back to TW format for diff comparison
+            if fname in DATE_FIELDS:
+                fields[fname] = human_date_to_tw(fval)
+            elif fname == "effort":
+                fields[fname] = parse_effort(fval)
+            else:
+                fields[fname] = fval
             desc_end = i
         elif tag_m:
             tags.append(tag_m.group(1))
@@ -156,7 +223,11 @@ def parse_task_line(line: str) -> dict | None:
     return task
 
 
-def serialize_task_line(task: dict, fields_filter: list[str] | None = None) -> str:
+def serialize_task_line(
+    task: dict,
+    fields_filter: list[str] | None = None,
+    omit_group_field: str | None = None,
+) -> str:
     """Serialize a task dict to a markdown line."""
     status_char = "x" if task.get("status") == "completed" else " "
     desc = task.get("description", "")
@@ -164,11 +235,18 @@ def serialize_task_line(task: dict, fields_filter: list[str] | None = None) -> s
     parts = [desc]
 
     def include(f: str) -> bool:
+        if omit_group_field and f == omit_group_field:
+            return False
         return fields_filter is None or f in fields_filter
 
     for field in KNOWN_FIELDS:
         if field in task and include(field):
-            parts.append(f"{field}:{task[field]}")
+            val = task[field]
+            if field in DATE_FIELDS:
+                val = tw_date_to_human(val)
+            elif field == "effort":
+                val = format_effort(str(val))
+            parts.append(f"{field}:{val}")
 
     for tag in sorted(task.get("tags", [])):
         if include("tags"):
@@ -189,6 +267,9 @@ def serialize_task_line(task: dict, fields_filter: list[str] | None = None) -> s
 
 def cmd_render(args: argparse.Namespace) -> None:
     filter_args = args.filter or []
+    # Default to status:pending if no filter given
+    if not filter_args:
+        filter_args = ["status:pending"]
     sort_spec = args.sort or "urgency-"
     group_field = args.group
     fields_filter = [f.strip() for f in args.fields.split(",")] if args.fields else None
@@ -213,7 +294,7 @@ def cmd_render(args: argparse.Namespace) -> None:
     group_part = f" | group: {group_field}" if group_field else ""
     header = f"<!-- taskmd filter: {filter_str} | sort: {sort_spec}{group_part} | rendered_at: {rendered_at} -->"
 
-    lines = [header, "", f"# Tasks: {filter_str}", ""]
+    lines = [header, ""]
 
     if group_field:
         groups: dict[str, list[dict]] = {}
@@ -225,7 +306,7 @@ def cmd_render(args: argparse.Namespace) -> None:
             lines.append(f"## {group_val}")
             lines.append("")
             for task in group_tasks:
-                lines.append(serialize_task_line(task, fields_filter))
+                lines.append(serialize_task_line(task, fields_filter, omit_group_field=group_field))
             lines.append("")
     else:
         for task in tasks:
@@ -253,7 +334,6 @@ def compute_diff(
         full_uuid = short_to_full.get(short) if short else None
 
         if full_uuid and full_uuid in seen:
-            # Duplicate — treat as new task
             clean = {k: v for k, v in line_task.items() if not k.startswith("_") and k != "status" and k != "description"}
             actions.append({"type": "add", "description": line_task.get("description", ""), "fields": clean})
             continue
@@ -263,34 +343,27 @@ def compute_diff(
             base = uuid_map[full_uuid]
             task_fields = {k: v for k, v in line_task.items() if not k.startswith("_") and k != "status" and k != "description"}
 
-            # Check status change
             new_status = line_task.get("status", "pending")
             old_status = base.get("status", "pending")
 
             if new_status == "completed" and old_status == "pending":
                 actions.append({"type": "done", "uuid": full_uuid, "fields": {}})
             elif new_status == "pending" and old_status == "completed":
-                # Re-open: modify status back — taskwarrior doesn't support this directly,
-                # we emit a modify with annotation; best-effort
                 actions.append({"type": "modify", "uuid": full_uuid, "fields": {"status": "pending"}})
 
-            # Check field changes
             changed: dict[str, Any] = {}
             for field, val in task_fields.items():
                 if str(base.get(field, "")) != str(val):
                     changed[field] = val
-            # Check description change
             if line_task.get("description", "") != base.get("description", ""):
                 changed["description"] = line_task["description"]
 
             if changed:
                 actions.append({"type": "modify", "uuid": full_uuid, "fields": changed})
         else:
-            # New task (no UUID or unrecognized UUID)
             clean = {k: v for k, v in line_task.items() if not k.startswith("_") and k != "status" and k != "description"}
             actions.append({"type": "add", "description": line_task.get("description", ""), "fields": clean})
 
-    # Tasks in base that were not seen
     for full_uuid, base_task in uuid_map.items():
         if full_uuid not in seen:
             if on_delete == "delete":
@@ -305,6 +378,38 @@ def compute_diff(
 # Apply command
 # ---------------------------------------------------------------------------
 
+def _parse_group_context(lines: list[str], parsed_lines: list[dict]) -> list[dict]:
+    """Inject group field into tasks that inherit it from a ## header."""
+    header_re = re.compile(r"^<!-- taskmd.*group:\s*(\S+)")
+    group_field = None
+    for line in lines:
+        m = header_re.search(line)
+        if m:
+            group_field = m.group(1).rstrip("|").strip()
+            break
+
+    if not group_field:
+        return parsed_lines
+
+    current_group = None
+    task_idx = 0
+    for line in lines:
+        gm = GROUP_HEADER_RE.match(line.strip())
+        if gm:
+            current_group = gm.group(1).strip()
+            if current_group == "(none)":
+                current_group = None
+            continue
+        if TASK_LINE_RE.match(line.strip()):
+            if task_idx < len(parsed_lines) and current_group:
+                t = parsed_lines[task_idx]
+                if group_field not in t:
+                    t[group_field] = current_group
+            task_idx += 1
+
+    return parsed_lines
+
+
 def cmd_apply(args: argparse.Namespace) -> None:
     try:
         with open(args.file, "r") as fh:
@@ -314,7 +419,6 @@ def cmd_apply(args: argparse.Namespace) -> None:
 
     lines = content.splitlines()
 
-    # Extract header
     filter_args: list[str] = []
     rendered_at: str | None = None
     sort_spec = "urgency-"
@@ -330,17 +434,17 @@ def cmd_apply(args: argparse.Namespace) -> None:
             rendered_at = hm.group(4).strip()
             break
 
-    # Parse task lines
     parsed_lines = []
     for line in lines:
         task = parse_task_line(line)
         if task:
             parsed_lines.append(task)
 
-    # Get base state
+    # Inject group context for new tasks under group headers
+    parsed_lines = _parse_group_context(lines, parsed_lines)
+
     base_tasks = tw_export(filter_args)
 
-    # Conflict check
     conflicts: list[str] = []
     if not args.force and rendered_at:
         try:
@@ -366,7 +470,6 @@ def cmd_apply(args: argparse.Namespace) -> None:
 
     summary = {"added": 0, "modified": 0, "completed": 0, "deleted": 0, "errors": [], "action_count": len(diff), "conflicts": conflicts}
 
-    # Execute: adds first, then modifies, then dones, then deletes
     for action_type in ("add", "modify", "done", "delete"):
         for action in diff:
             if action["type"] != action_type:
@@ -420,14 +523,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command")
 
-    # render
     render_p = sub.add_parser("render", help="Export tasks as markdown")
-    render_p.add_argument("filter", nargs="*", help="Taskwarrior filter args")
+    render_p.add_argument("filter", nargs="*", help="Taskwarrior filter args (default: status:pending)")
     render_p.add_argument("--sort", default="urgency-", help="Sort field (e.g. urgency-, due+)")
     render_p.add_argument("--fields", default=None, help="Comma-separated fields to render")
     render_p.add_argument("--group", default=None, help="Group tasks by this field")
 
-    # apply
     apply_p = sub.add_parser("apply", help="Sync markdown edits back to Taskwarrior")
     apply_p.add_argument("file", help="Markdown file to apply")
     apply_p.add_argument("--dry-run", action="store_true", help="Print actions without executing")
@@ -435,7 +536,6 @@ def build_parser() -> argparse.ArgumentParser:
                          help="Action for tasks removed from markdown")
     apply_p.add_argument("--force", action="store_true", help="Skip conflict detection")
 
-    # completions
     sub.add_parser("completions", help="Output JSON of projects, tags, fields")
 
     return parser

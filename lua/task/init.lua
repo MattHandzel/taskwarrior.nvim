@@ -97,8 +97,51 @@ end
 
 local function setup_buf_syntax(bufnr)
   vim.api.nvim_buf_call(bufnr, function()
-    vim.cmd("syntax match TaskUUID /<!\\-\\-.*uuid:[0-9a-fA-F]\\{8\\}.*\\-\\->/ conceal")
+    -- Base markdown syntax
     vim.cmd("runtime! syntax/markdown.vim")
+
+    -- Conceal UUIDs
+    vim.cmd("syntax match TaskUUID /<!\\-\\-.*uuid:[0-9a-fA-F]\\{8\\}.*\\-\\->/ conceal")
+
+    -- Priority highlighting
+    vim.cmd("syntax match TaskPriorityH /priority:H/ containedin=ALL")
+    vim.cmd("syntax match TaskPriorityM /priority:M/ containedin=ALL")
+    vim.cmd("syntax match TaskPriorityL /priority:L/ containedin=ALL")
+
+    -- Date highlighting
+    vim.cmd("syntax match TaskDue /due:\\d\\{4\\}-\\d\\{2\\}-\\d\\{2\\}/ containedin=ALL")
+    vim.cmd("syntax match TaskScheduled /scheduled:\\d\\{4\\}-\\d\\{2\\}-\\d\\{2\\}/ containedin=ALL")
+    vim.cmd("syntax match TaskWait /wait:\\d\\{4\\}-\\d\\{2\\}-\\d\\{2\\}/ containedin=ALL")
+
+    -- Tags
+    vim.cmd("syntax match TaskTag /+\\w\\+/ containedin=ALL")
+
+    -- Project (when not grouped)
+    vim.cmd("syntax match TaskProject /project:\\S\\+/ containedin=ALL")
+
+    -- Recurrence and effort
+    vim.cmd("syntax match TaskRecur /recur:\\S\\+/ containedin=ALL")
+    vim.cmd("syntax match TaskEffort /effort:\\S\\+/ containedin=ALL")
+
+    -- Completed tasks (dim the whole line)
+    vim.cmd("syntax match TaskCompleted /^- \\[x\\].*$/ containedin=ALL")
+
+    -- Header comment (the <!-- taskmd ... --> line)
+    vim.cmd("syntax match TaskHeader /^<!--.*-->$/ containedin=ALL")
+
+    -- Link highlights to colors
+    vim.cmd("highlight TaskPriorityH guifg=#f38ba8 gui=bold")  -- red
+    vim.cmd("highlight TaskPriorityM guifg=#fab387 gui=bold")  -- peach/orange
+    vim.cmd("highlight TaskPriorityL guifg=#a6e3a1")            -- green
+    vim.cmd("highlight TaskDue guifg=#f9e2af")                  -- yellow
+    vim.cmd("highlight TaskScheduled guifg=#f9e2af")
+    vim.cmd("highlight TaskWait guifg=#9399b2")                 -- dim
+    vim.cmd("highlight TaskTag guifg=#89b4fa")                  -- blue
+    vim.cmd("highlight TaskProject guifg=#94e2d5")              -- teal
+    vim.cmd("highlight TaskRecur guifg=#cba6f7")                -- mauve
+    vim.cmd("highlight TaskEffort guifg=#9399b2")               -- dim
+    vim.cmd("highlight TaskCompleted guifg=#585b70")            -- very dim (strikethrough feel)
+    vim.cmd("highlight TaskHeader guifg=#45475a")               -- near-invisible
   end)
 end
 

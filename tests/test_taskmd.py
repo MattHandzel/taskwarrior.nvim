@@ -64,8 +64,8 @@ class TestParser:
         assert task["description"] == "Deploy service"
         assert task["project"] == "Work"
         assert task["priority"] == "H"
-        assert task["due"] == "2026-04-01"
-        assert task["scheduled"] == "2026-03-25"
+        assert task["due"] == "20260401T000000Z"
+        assert task["scheduled"] == "20260325T000000Z"
         assert "backend" in task["tags"]
         assert "devops" in task["tags"]
         assert task["_short_uuid"] == "ab05fb51"
@@ -175,8 +175,8 @@ class TestParser:
         task = taskmd.parse_task_line(line)
         assert task is not None
         assert task["recur"] == "weekly"
-        assert task["wait"] == "2026-04-01"
-        assert task["until"] == "2026-12-31"
+        assert task["wait"] == "20260401T000000Z"
+        assert task["until"] == "20261231T000000Z"
         assert task["description"] == "Recurring task"
 
 
@@ -490,7 +490,7 @@ def _apply_markdown(content: str, tmp_path, dry_run: bool = False, on_delete: st
 class TestIntegration:
     def test_render_empty(self, tw_env, tmp_path):
         output = _render_to_string()
-        assert "# Tasks:" in output
+        assert "<!-- taskmd" in output
         # No task lines
         task_lines = [l for l in output.splitlines() if l.startswith("- [")]
         assert task_lines == []
@@ -624,8 +624,6 @@ class TestIntegration:
         # - New task D: add
         modified_lines = [
             lines[0],  # header
-            "",
-            lines[2],  # # Tasks: heading
             "",
             f"- [ ] Task A modified project:Alpha <!-- uuid:{uuid_a} -->",
             f"- [x] Task B project:Beta <!-- uuid:{uuid_b} -->",
