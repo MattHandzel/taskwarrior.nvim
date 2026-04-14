@@ -15,15 +15,17 @@ from typing import Any
 # Constants
 # ---------------------------------------------------------------------------
 
-KNOWN_FIELDS = ("project", "priority", "due", "scheduled", "recur", "wait", "until", "effort")
+KNOWN_FIELDS = ("project", "priority", "due", "scheduled", "recur", "wait", "until", "effort", "depends")
 FIELD_RE = re.compile(r"\b(" + "|".join(KNOWN_FIELDS) + r"):(\S+)")
-TAG_RE = re.compile(r"\+(\w+)")
+TAG_RE = re.compile(r"\+([\w-]+)")
+LIST_FIELDS = {"depends"}  # fields whose value is a comma-separated list
 UUID_COMMENT_RE = re.compile(r"<!--\s*uuid:([0-9a-fA-F]{8})\s*-->")
-TASK_LINE_RE = re.compile(r"^- \[([ x])\] (.+)$")
+TASK_LINE_RE = re.compile(r"^- \[([ >x])\] (.+)$")
 HEADER_RE = re.compile(
     r"<!--\s*taskmd filter:\s*(.*?)\s*\|"
     r"\s*sort:\s*(.*?)\s*\|"
     r"(?:\s*group:\s*(.*?)\s*\|)?"
+    r"(?:\s*udas:\s*(.*?)\s*\|)?"
     r"\s*rendered_at:\s*(.*?)\s*-->",
     re.IGNORECASE,
 )
@@ -103,12 +105,22 @@ def tw_export(filter_args: list[str]) -> list[dict]:
     text = result.stdout.strip()
     if not text:
         return []
+    # Handle TW warnings/notices: TW2 hooks and TW3 migration can emit
+    # text before the JSON array. Find the JSON start.
+    json_start = text.find("[")
+    if json_start > 0:
+        text = text[json_start:]
+    elif json_start < 0:
+        return []
     return json.loads(text)
 
 
 def tw_add(desc: str, fields: dict) -> str:
-    parts = [desc] + _fields_to_args(fields)
-    cmd = ["task"] + BASE_RC + ["add"] + parts
+    # Pass description as a single "description:..." attribute so TW doesn't
+    # parse embedded special chars (+tag, -word, parens) as operators.
+    # Subprocess list mode ensures each element is one argv token.
+    attr_args = _fields_to_args(fields)
+    cmd = ["task"] + BASE_RC + ["add", f"description:{desc}"] + attr_args
     result = _run(cmd, check=False)
     output = result.stdout + result.stderr
     m = re.search(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", output, re.I)
@@ -116,7 +128,13 @@ def tw_add(desc: str, fields: dict) -> str:
 
 
 def tw_modify(uuid: str, fields: dict) -> None:
+    fields = dict(fields)  # copy to avoid mutating caller
+    desc = fields.pop("description", None)
     parts = _fields_to_args(fields)
+    if desc is not None:
+        # Pass as "description:value" — subprocess list mode ensures it's
+        # one argv token, so TW won't parse special chars in the value.
+        parts.append(f"description:{desc}")
     if not parts:
         return
     cmd = ["task"] + BASE_RC + [uuid, "modify"] + parts
@@ -133,9 +151,27 @@ def tw_delete(uuid: str) -> None:
     _run(cmd, check=False)
 
 
+def tw_start(uuid: str) -> None:
+    cmd = ["task"] + BASE_RC + [uuid, "start"]
+    _run(cmd, check=False)
+
+
+def tw_stop(uuid: str) -> None:
+    cmd = ["task"] + BASE_RC + [uuid, "stop"]
+    _run(cmd, check=False)
+
+
 def tw_undo() -> None:
     cmd = ["task"] + BASE_RC + ["undo"]
     _run(cmd, check=False)
+
+
+def tw_udas() -> list[str]:
+    """Get custom UDA field names from Taskwarrior."""
+    result = _run(["task", "_udas"], check=False)
+    udas = [u.strip() for u in result.stdout.splitlines() if u.strip()]
+    # Filter out fields already in KNOWN_FIELDS and built-in pseudo-UDAs
+    return [u for u in udas if u not in KNOWN_FIELDS and u not in ("priority",)]
 
 
 def tw_completions() -> dict:
@@ -150,14 +186,30 @@ def _fields_to_args(fields: dict) -> list[str]:
     args = []
     for key, val in fields.items():
         if key == "tags":
+            if isinstance(val, list) and len(val) == 0:
+                # Empty list signals "remove all tags" — handled via _removed_tags
+                pass
+            else:
+                for tag in val:
+                    args.append(f"+{tag}")
+        elif key == "_removed_tags":
             for tag in val:
-                args.append(f"+{tag}")
+                args.append(f"-{tag}")
         elif key == "status":
             pass
+        elif val == "":
+            args.append(f"{key}:")
         elif key in DATE_FIELDS:
             args.append(f"{key}:{human_date_to_tw(val)}")
         elif key == "effort":
             args.append(f"effort:{parse_effort(val)}")
+        elif key in LIST_FIELDS:
+            # Serialize as comma-separated list. Empty list means "clear" — TW
+            # accepts `depends:` to clear all dependencies.
+            if isinstance(val, list):
+                args.append(f"{key}:{','.join(val)}")
+            else:
+                args.append(f"{key}:{val}")
         else:
             args.append(f"{key}:{val}")
     return args
@@ -167,14 +219,18 @@ def _fields_to_args(fields: dict) -> list[str]:
 # Markdown parser / serializer
 # ---------------------------------------------------------------------------
 
-def parse_task_line(line: str) -> dict | None:
+def parse_task_line(line: str, extra_fields: tuple[str, ...] = ()) -> dict | None:
     """Parse a markdown task line into a task dict. Returns None if not a task line."""
+    line = line.lstrip()
     m = TASK_LINE_RE.match(line.rstrip())
     if not m:
         return None
 
     status_char, rest = m.group(1), m.group(2)
-    status = "completed" if status_char == "x" else "pending"
+    if status_char == "x":
+        status = "completed"
+    else:
+        status = "pending"
 
     # Extract UUID comment from the end
     uuid_match = UUID_COMMENT_RE.search(rest)
@@ -182,16 +238,23 @@ def parse_task_line(line: str) -> dict | None:
     if uuid_match:
         rest = rest[: uuid_match.start()].rstrip()
 
+    all_fields = KNOWN_FIELDS + extra_fields
+
     # Parse from right to left: extract tags and fields, leaving description
     tokens = rest.split()
     fields: dict[str, Any] = {}
     tags: list[str] = []
     desc_end = len(tokens)
 
+    # Scan all tokens right-to-left, collecting fields and tags.
+    # Don't stop at unrecognized tokens — skip them and keep scanning.
+    # Track the leftmost metadata token position to determine where description ends.
+    metadata_positions: list[int] = []
+
     for i in range(len(tokens) - 1, -1, -1):
         tok = tokens[i]
-        field_m = re.match(r"^(" + "|".join(KNOWN_FIELDS) + r"):(\S+)$", tok)
-        tag_m = re.match(r"^\+(\w+)$", tok)
+        field_m = re.match(r"^(" + "|".join(all_fields) + r"):(\S+)$", tok)
+        tag_m = re.match(r"^\+([\w-]+)$", tok)
         if field_m:
             fname, fval = field_m.group(1), field_m.group(2)
             # Convert human dates back to TW format for diff comparison
@@ -199,18 +262,26 @@ def parse_task_line(line: str) -> dict | None:
                 fields[fname] = human_date_to_tw(fval)
             elif fname == "effort":
                 fields[fname] = parse_effort(fval)
+            elif fname in LIST_FIELDS:
+                items = [s for s in fval.split(",") if s]
+                fields[fname] = sorted(items)
             else:
                 fields[fname] = fval
-            desc_end = i
+            metadata_positions.append(i)
         elif tag_m:
             tags.append(tag_m.group(1))
-            desc_end = i
+            metadata_positions.append(i)
         else:
+            # Stop scanning — everything to the left is description
             break
+
+    if metadata_positions:
+        desc_end = min(metadata_positions)
 
     description = " ".join(tokens[:desc_end])
     if tags:
-        fields["tags"] = sorted(tags)
+        # Dedup while preserving sorted order: user may type `+foo +foo`.
+        fields["tags"] = sorted(set(tags))
 
     task: dict[str, Any] = {
         "status": status,
@@ -219,6 +290,8 @@ def parse_task_line(line: str) -> dict | None:
     task.update(fields)
     if short_uuid:
         task["_short_uuid"] = short_uuid
+    if status_char == ">":
+        task["_started"] = True
 
     return task
 
@@ -227,10 +300,18 @@ def serialize_task_line(
     task: dict,
     fields_filter: list[str] | None = None,
     omit_group_field: str | None = None,
+    extra_fields: tuple[str, ...] = (),
 ) -> str:
     """Serialize a task dict to a markdown line."""
-    status_char = "x" if task.get("status") == "completed" else " "
-    desc = task.get("description", "")
+    if task.get("status") == "completed":
+        status_char = "x"
+    elif task.get("start"):
+        status_char = ">"
+    else:
+        status_char = " "
+    # Replace newlines in description with spaces so the line stays on one line.
+    # Coalesce None to "" so a task dict with description=None doesn't crash.
+    desc = (task.get("description") or "").replace("\n", " ").replace("\r", "")
 
     parts = [desc]
 
@@ -239,13 +320,22 @@ def serialize_task_line(
             return False
         return fields_filter is None or f in fields_filter
 
-    for field in KNOWN_FIELDS:
+    all_fields = KNOWN_FIELDS + extra_fields
+    for field in all_fields:
         if field in task and include(field):
             val = task[field]
             if field in DATE_FIELDS:
                 val = tw_date_to_human(val)
             elif field == "effort":
                 val = format_effort(str(val))
+            elif field in LIST_FIELDS:
+                # TW stores depends as full UUIDs (list or comma-separated
+                # string). Render as short-UUID (first 8) for readability.
+                if isinstance(val, str):
+                    val = [s for s in val.split(",") if s]
+                if not val:
+                    continue
+                val = ",".join(v[:8] for v in sorted(val))
             parts.append(f"{field}:{val}")
 
     for tag in sorted(task.get("tags", [])):
@@ -274,7 +364,24 @@ def cmd_render(args: argparse.Namespace) -> None:
     group_field = args.group
     fields_filter = [f.strip() for f in args.fields.split(",")] if args.fields else None
 
+    # Auto-discover UDAs
+    udas = tuple(tw_udas())
+
     tasks = tw_export(filter_args)
+
+    # Collapse recurring task instances: keep only the earliest pending instance per parent
+    if not getattr(args, 'no_collapse', False):
+        seen_parents: dict[str, dict] = {}
+        deduped: list[dict] = []
+        for t in tasks:
+            parent = t.get("parent")
+            if parent and t.get("status") == "pending":
+                if parent not in seen_parents or t.get("due", "") < seen_parents[parent].get("due", ""):
+                    seen_parents[parent] = t
+            else:
+                deduped.append(t)
+        deduped.extend(seen_parents.values())
+        tasks = deduped
 
     # Sort
     descending = sort_spec.endswith("-")
@@ -292,7 +399,8 @@ def cmd_render(args: argparse.Namespace) -> None:
     rendered_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
     filter_str = " ".join(filter_args)
     group_part = f" | group: {group_field}" if group_field else ""
-    header = f"<!-- taskmd filter: {filter_str} | sort: {sort_spec}{group_part} | rendered_at: {rendered_at} -->"
+    udas_part = f" | udas: {','.join(udas)}" if udas else ""
+    header = f"<!-- taskmd filter: {filter_str} | sort: {sort_spec}{group_part}{udas_part} | rendered_at: {rendered_at} -->"
 
     lines = [header, ""]
 
@@ -306,11 +414,11 @@ def cmd_render(args: argparse.Namespace) -> None:
             lines.append(f"## {group_val}")
             lines.append("")
             for task in group_tasks:
-                lines.append(serialize_task_line(task, fields_filter, omit_group_field=group_field))
+                lines.append(serialize_task_line(task, fields_filter, omit_group_field=group_field, extra_fields=udas))
             lines.append("")
     else:
         for task in tasks:
-            lines.append(serialize_task_line(task, fields_filter))
+            lines.append(serialize_task_line(task, fields_filter, extra_fields=udas))
 
     print("\n".join(lines))
 
@@ -319,15 +427,51 @@ def cmd_render(args: argparse.Namespace) -> None:
 # Diff engine
 # ---------------------------------------------------------------------------
 
+def _normalize_base(
+    base: dict,
+    extra_fields: tuple[str, ...] = (),
+    omit_group_field: str | None = None,
+) -> dict:
+    """Round-trip a base task through serialize→parse to normalize for comparison.
+
+    This ensures that any lossy-ness in the format (e.g. descriptions containing
+    +word that get parsed as tags, hyphenated tags that don't round-trip, newlines
+    in descriptions) is applied equally to both sides of the diff.
+
+    We pass omit_group_field here to match the render serialization — this is
+    critical for correct description normalization when descriptions contain
+    field-like text (e.g. ``priority:H`` embedded in the description).  The
+    group field value is re-injected from the raw base task after parsing so
+    that field-level diffs still detect group changes.
+    """
+    line = serialize_task_line(base, omit_group_field=omit_group_field, extra_fields=extra_fields)
+    parsed = parse_task_line(line, extra_fields=extra_fields)
+    if parsed is None:
+        return {"description": base.get("description", "").replace("\n", " ").replace("\r", ""),
+                "status": base.get("status", "pending")}
+    # Re-inject the group field from the raw base so field comparison can
+    # detect when a user moves a task between groups.
+    if omit_group_field and omit_group_field in base:
+        parsed[omit_group_field] = base[omit_group_field]
+    return parsed
+
+
 def compute_diff(
     parsed_lines: list[dict],
     base_tasks: list[dict],
     on_delete: str = "done",
+    extra_fields: tuple[str, ...] = (),
+    omit_group_field: str | None = None,
 ) -> list[dict]:
     uuid_map: dict[str, dict] = {t["uuid"]: t for t in base_tasks if "uuid" in t}
     short_to_full: dict[str, str] = {v[:8]: v for v in uuid_map}
     seen: set[str] = set()
     actions: list[dict] = []
+
+    # Pre-compute normalized base for each task (what parse(serialize(base)) gives)
+    normalized_bases: dict[str, dict] = {}
+    for uid, base in uuid_map.items():
+        normalized_bases[uid] = _normalize_base(base, extra_fields=extra_fields, omit_group_field=omit_group_field)
 
     for line_task in parsed_lines:
         short = line_task.get("_short_uuid")
@@ -335,41 +479,91 @@ def compute_diff(
 
         if full_uuid and full_uuid in seen:
             clean = {k: v for k, v in line_task.items() if not k.startswith("_") and k != "status" and k != "description"}
-            actions.append({"type": "add", "description": line_task.get("description", ""), "fields": clean})
+            add_action: dict[str, Any] = {"type": "add", "description": line_task.get("description", ""), "fields": clean}
+            if line_task.get("_started"):
+                add_action["_post_start"] = True
+            if line_task.get("status") == "completed":
+                add_action["_post_done"] = True
+            actions.append(add_action)
             continue
 
         if full_uuid:
             seen.add(full_uuid)
             base = uuid_map[full_uuid]
+            norm = normalized_bases[full_uuid]
             task_fields = {k: v for k, v in line_task.items() if not k.startswith("_") and k != "status" and k != "description"}
+            norm_fields = {k: v for k, v in norm.items() if not k.startswith("_") and k != "status" and k != "description"}
 
             new_status = line_task.get("status", "pending")
             old_status = base.get("status", "pending")
+            new_started = line_task.get("_started", False)
+            old_started = bool(base.get("start"))
 
             if new_status == "completed" and old_status == "pending":
+                if old_started:
+                    actions.append({"type": "stop", "uuid": full_uuid, "fields": {}})
                 actions.append({"type": "done", "uuid": full_uuid, "fields": {}})
             elif new_status == "pending" and old_status == "completed":
                 actions.append({"type": "modify", "uuid": full_uuid, "fields": {"status": "pending"}})
+            elif new_status == "pending" and old_status == "pending":
+                if new_started and not old_started:
+                    actions.append({"type": "start", "uuid": full_uuid, "fields": {}})
+                elif not new_started and old_started:
+                    actions.append({"type": "stop", "uuid": full_uuid, "fields": {}})
 
+            # Compare parsed user line against normalized base (round-tripped)
             changed: dict[str, Any] = {}
-            for field, val in task_fields.items():
-                if str(base.get(field, "")) != str(val):
-                    changed[field] = val
-            if line_task.get("description", "") != base.get("description", ""):
-                changed["description"] = line_task["description"]
+            all_fields = set(task_fields.keys()) | set(norm_fields.keys())
+            for field in all_fields:
+                user_val = task_fields.get(field)
+                norm_val = norm_fields.get(field)
+                if user_val == norm_val:
+                    continue
+                # For date fields, compare by human-readable form
+                if field in DATE_FIELDS and user_val and norm_val:
+                    if tw_date_to_human(str(user_val)) == tw_date_to_human(str(norm_val)):
+                        continue
+                # Field was added by user (not in normalized base)
+                if norm_val is None and user_val is not None:
+                    changed[field] = user_val
+                # Field was removed by user (in normalized base but not in user line)
+                elif user_val is None and norm_val is not None:
+                    if field == "tags":
+                        # Need to figure out what tags were actually removed from the REAL base
+                        base_tags = base.get("tags", [])
+                        if base_tags:
+                            changed["tags"] = []
+                            changed["_removed_tags"] = list(base_tags)
+                    else:
+                        changed[field] = ""
+                # Field changed
+                elif str(user_val) != str(norm_val):
+                    changed[field] = user_val
+
+            # Compare description against normalized base
+            user_desc = line_task.get("description", "")
+            norm_desc = norm.get("description", "")
+            if user_desc != norm_desc:
+                changed["description"] = user_desc
 
             if changed:
                 actions.append({"type": "modify", "uuid": full_uuid, "fields": changed})
         else:
             clean = {k: v for k, v in line_task.items() if not k.startswith("_") and k != "status" and k != "description"}
-            actions.append({"type": "add", "description": line_task.get("description", ""), "fields": clean})
+            add_action: dict[str, Any] = {"type": "add", "description": line_task.get("description", ""), "fields": clean}
+            if line_task.get("_started"):
+                add_action["_post_start"] = True
+            if line_task.get("status") == "completed":
+                add_action["_post_done"] = True
+            actions.append(add_action)
 
     for full_uuid, base_task in uuid_map.items():
         if full_uuid not in seen:
+            desc = base_task.get("description", "")
             if on_delete == "delete":
-                actions.append({"type": "delete", "uuid": full_uuid, "fields": {}})
+                actions.append({"type": "delete", "uuid": full_uuid, "description": desc, "fields": {}})
             else:
-                actions.append({"type": "done", "uuid": full_uuid, "fields": {}})
+                actions.append({"type": "done", "uuid": full_uuid, "description": desc, "fields": {}})
 
     return actions
 
@@ -423,20 +617,42 @@ def cmd_apply(args: argparse.Namespace) -> None:
     rendered_at: str | None = None
     sort_spec = "urgency-"
     group_field: str | None = None
+    header_found = False
+
+    udas_str: str | None = None
 
     for line in lines:
         hm = HEADER_RE.search(line)
         if hm:
+            header_found = True
             filter_str = hm.group(1).strip()
             filter_args = filter_str.split() if filter_str else []
             sort_spec = hm.group(2).strip()
             group_field = hm.group(3).strip() if hm.group(3) else None
-            rendered_at = hm.group(4).strip()
+            udas_str = hm.group(4).strip() if hm.group(4) else None
+            rendered_at = hm.group(5).strip() if hm.group(5) else None
             break
+
+    # Safety: refuse to apply a file with no valid header unless --force is set.
+    # Without a filter, base_tasks = all pending tasks, and any task not present
+    # in the file would be marked done — silent data loss for hand-written files
+    # or files where the header was accidentally edited out.
+    if not header_found and not args.force:
+        _fatal(
+            "refusing to apply: no valid '<!-- taskmd filter: ... | sort: ... | "
+            "rendered_at: ... -->' header found. Re-render with 'taskmd render' to "
+            "regenerate the header, or pass --force to apply anyway (dangerous: "
+            "tasks not present in the file will be marked done)."
+        )
+
+    # Parse UDAs from header
+    extra_fields: tuple[str, ...] = ()
+    if udas_str:
+        extra_fields = tuple(u.strip() for u in udas_str.split(",") if u.strip())
 
     parsed_lines = []
     for line in lines:
-        task = parse_task_line(line)
+        task = parse_task_line(line, extra_fields=extra_fields)
         if task:
             parsed_lines.append(task)
 
@@ -445,10 +661,28 @@ def cmd_apply(args: argparse.Namespace) -> None:
 
     base_tasks = tw_export(filter_args)
 
+    # Collapse recurring task instances (same as cmd_render) so that
+    # collapsed instances don't appear as "deleted" in the diff
+    seen_parents: dict[str, dict] = {}
+    deduped: list[dict] = []
+    for t in base_tasks:
+        parent = t.get("parent")
+        if parent and t.get("status") == "pending":
+            if parent not in seen_parents or t.get("due", "") < seen_parents[parent].get("due", ""):
+                seen_parents[parent] = t
+        else:
+            deduped.append(t)
+    deduped.extend(seen_parents.values())
+    base_tasks = deduped
+
     conflicts: list[str] = []
     if not args.force and rendered_at:
         try:
-            rendered_dt = datetime.fromisoformat(rendered_at.replace("Z", "+00:00"))
+            # Ensure rendered_at is always timezone-aware (UTC)
+            ra = rendered_at
+            if not ra.endswith("Z") and "+" not in ra and "-" not in ra[10:]:
+                ra += "+00:00"
+            rendered_dt = datetime.fromisoformat(ra.replace("Z", "+00:00"))
             for task in base_tasks:
                 mod = task.get("modified", "")
                 if mod:
@@ -462,7 +696,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
         except ValueError:
             pass
 
-    diff = compute_diff(parsed_lines, base_tasks, on_delete=args.on_delete)
+    diff = compute_diff(parsed_lines, base_tasks, on_delete=args.on_delete, extra_fields=extra_fields, omit_group_field=group_field)
 
     if args.dry_run:
         print(json.dumps({"actions": diff, "conflicts": conflicts}, indent=2))
@@ -470,21 +704,29 @@ def cmd_apply(args: argparse.Namespace) -> None:
 
     summary = {"added": 0, "modified": 0, "completed": 0, "deleted": 0, "errors": [], "action_count": len(diff), "conflicts": conflicts}
 
-    for action_type in ("add", "modify", "done", "delete"):
+    for action_type in ("add", "modify", "start", "stop", "done", "delete"):
         for action in diff:
             if action["type"] != action_type:
                 continue
             try:
                 if action_type == "add":
-                    tw_add(action["description"], action["fields"])
+                    new_uuid = tw_add(action["description"], action["fields"])
                     summary["added"] += 1
+                    # If the new task was created as [>] or [x], apply the
+                    # follow-up state change now that we know its UUID.
+                    if new_uuid and action.get("_post_done"):
+                        tw_done(new_uuid)
+                        summary["completed"] += 1
+                    elif new_uuid and action.get("_post_start"):
+                        tw_start(new_uuid)
                 elif action_type == "modify":
-                    fields = dict(action["fields"])
-                    desc = fields.pop("description", None)
-                    if desc:
-                        tw_modify(action["uuid"], {"description": desc, **fields})
-                    else:
-                        tw_modify(action["uuid"], fields)
+                    tw_modify(action["uuid"], action["fields"])
+                    summary["modified"] += 1
+                elif action_type == "start":
+                    tw_start(action["uuid"])
+                    summary["modified"] += 1
+                elif action_type == "stop":
+                    tw_stop(action["uuid"])
                     summary["modified"] += 1
                 elif action_type == "done":
                     tw_done(action["uuid"])
@@ -528,6 +770,8 @@ def build_parser() -> argparse.ArgumentParser:
     render_p.add_argument("--sort", default="urgency-", help="Sort field (e.g. urgency-, due+)")
     render_p.add_argument("--fields", default=None, help="Comma-separated fields to render")
     render_p.add_argument("--group", default=None, help="Group tasks by this field")
+    render_p.add_argument("--no-collapse", action="store_true", default=False,
+                         help="Show all recurring task instances instead of collapsing")
 
     apply_p = sub.add_parser("apply", help="Sync markdown edits back to Taskwarrior")
     apply_p.add_argument("file", help="Markdown file to apply")
