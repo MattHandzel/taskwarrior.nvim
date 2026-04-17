@@ -126,6 +126,45 @@ function M.parse_effort(val)
   return r
 end
 
+-- Default value-to-number mappers keyed by field name. Used when the user
+-- has not configured `urgency_value_mappers`. Keep this list focused on
+-- cases where the TW-native storage format isn't directly numeric.
+-- Users can override any entry via `require("task").setup{ urgency_value_mappers = {...} }`.
+M.DEFAULT_URGENCY_VALUE_MAPPERS = {}
+
+-- Resolves the mapper for a given field, given a (possibly nil) user override.
+-- - user_mappers == nil   → use DEFAULT_URGENCY_VALUE_MAPPERS[field] or tonumber
+-- - user_mappers ~= nil   → use user_mappers[field] or tonumber (no defaults)
+-- This keeps "I didn't set it" (use defaults) distinct from "I set {}" (disable defaults).
+function M.resolve_value_mapper(field, user_mappers)
+  if user_mappers ~= nil then
+    return user_mappers[field] or tonumber
+  end
+  return M.DEFAULT_URGENCY_VALUE_MAPPERS[field] or tonumber
+end
+
+-- Convert an ISO 8601 duration ("PT1H30M", "PT45M", "PT2H") or a plain number
+-- to minutes as a number. Returns nil for unparseable input. Registered as
+-- the default mapper for the `effort` UDA below; users can override.
+function M.effort_to_minutes(val)
+  if val == nil then return nil end
+  if type(val) == "number" then return val end
+  val = tostring(val)
+  local n = tonumber(val)
+  if n then return n end
+  if val:sub(1, 2):upper() ~= "PT" then return nil end
+  local H = tonumber(val:match("(%d+)[Hh]") or "") or 0
+  local M_ = tonumber(val:match("[Hh](%d+)[Mm]") or val:match("^[Pp][Tt](%d+)[Mm]") or "") or 0
+  local S = tonumber(val:match("(%d+)[Ss]") or "") or 0
+  if H == 0 and M_ == 0 and S == 0 then return nil end
+  return H * 60 + M_ + S / 60
+end
+
+-- Register the built-in mapper for `effort`. Users can override via
+-- setup{ urgency_value_mappers = { effort = my_function } } — setting
+-- to `{}` disables all defaults including this one.
+M.DEFAULT_URGENCY_VALUE_MAPPERS.effort = M.effort_to_minutes
+
 -- ---------------------------------------------------------------------------
 -- Taskwarrior adapter (subprocess via vim.fn.system)
 -- ---------------------------------------------------------------------------
@@ -138,11 +177,70 @@ local function run(argv)
   return out, vim.v.shell_error
 end
 
+-- Rewrite +tag → tags.has:tag and -tag → tags.hasnt:tag so TW3's expression
+-- parser doesn't misparse tags with hyphens.  E.g. +EXP-0011 gets split into
+-- (+EXP) minus (0011) by TW3; tags.has:EXP-0011 is unambiguous.
+local function normalize_tag_filters(args)
+  local out = {}
+  for _, arg in ipairs(args or {}) do
+    local incl = arg:match("^%+([A-Za-z_][A-Za-z0-9_-]*)$")
+    if incl then
+      out[#out + 1] = "tags.has:" .. incl
+    else
+      local excl = arg:match("^%-([A-Za-z_][A-Za-z0-9_-]*)$")
+      if excl then
+        out[#out + 1] = "tags.hasnt:" .. excl
+      else
+        out[#out + 1] = arg
+      end
+    end
+  end
+  return out
+end
+
+-- Disambiguate the `m` suffix on duration literals in filter args. TW3
+-- interprets bare `Nm` as N MONTHS, not N minutes — so `effort<10m` matches
+-- every task (none are older than 10 months in duration). Rewriting to
+-- `10min` makes it mean what users expect.
+--
+-- Targets: any token of the form `<lhs><op><digits>m` where op is a
+-- comparison operator (`<`, `<=`, `>`, `>=`, `=`, or `.<word>:`). Pure tokens
+-- like `+10m` (a tag) or `10m` (literal) are left alone.
+local function normalize_duration_minutes(args)
+  local out = {}
+  for _, arg in ipairs(args or {}) do
+    local rewritten = arg:gsub(
+      "^([%w_]+)(<=?)(%d+%.?%d*)m$",
+      function(field, op, num) return field .. op .. num .. "min" end
+    )
+    if rewritten == arg then
+      rewritten = arg:gsub(
+        "^([%w_]+)(>=?)(%d+%.?%d*)m$",
+        function(field, op, num) return field .. op .. num .. "min" end
+      )
+    end
+    if rewritten == arg then
+      rewritten = arg:gsub(
+        "^([%w_]+)(=)(%d+%.?%d*)m$",
+        function(field, op, num) return field .. op .. num .. "min" end
+      )
+    end
+    if rewritten == arg then
+      rewritten = arg:gsub(
+        "^([%w_]+)(%.[a-z]+:)(%d+%.?%d*)m$",
+        function(field, op, num) return field .. op .. num .. "min" end
+      )
+    end
+    out[#out + 1] = rewritten
+  end
+  return out
+end
+
 function M.tw_export(filter_args)
   local argv = { "task" }
   for _, a in ipairs(BASE_RC) do argv[#argv + 1] = a end
   argv[#argv + 1] = "rc.json.array=on"
-  for _, a in ipairs(filter_args or {}) do argv[#argv + 1] = a end
+  for _, a in ipairs(normalize_tag_filters(normalize_duration_minutes(filter_args))) do argv[#argv + 1] = a end
   argv[#argv + 1] = "export"
   local text, rc = run(argv)
   if rc ~= 0 and rc ~= 1 then
@@ -269,14 +367,91 @@ local function field_set(extra_fields)
 end
 
 -- Split `rest` into whitespace-separated tokens (Python's str.split()).
+-- Tokenizer that treats `key:"value with spaces"` as a single token. Without
+-- this, UDA values containing whitespace get split and the right-to-left
+-- metadata scan breaks, causing field text to be mistaken for description
+-- and duplicated on round-trip.
 local function tokenize(s)
   local tokens = {}
-  for tok in s:gmatch("%S+") do tokens[#tokens + 1] = tok end
+  local i, len = 1, #s
+  while i <= len do
+    while i <= len and s:sub(i, i):match("%s") do i = i + 1 end
+    if i > len then break end
+    local start = i
+    local in_quotes = false
+    while i <= len do
+      local c = s:sub(i, i)
+      if in_quotes then
+        if c == '"' then in_quotes = false end
+        i = i + 1
+      elseif c:match("%s") then
+        break
+      elseif c == '"' then
+        in_quotes = true
+        i = i + 1
+      else
+        i = i + 1
+      end
+    end
+    tokens[#tokens + 1] = s:sub(start, i - 1)
+  end
   return tokens
 end
 
 local TASK_LINE_PATTERN = "^%- %[([ >x])%] (.+)$"
 local UUID_COMMENT_PATTERN = "<!%-%-%s*uuid:([0-9a-fA-F]+)%s*%-%->"
+
+-- Greedy parse for quick-capture input: extracts known field:value tokens and
+-- +tags from ANYWHERE in the line (not just the end), leaving the rest as
+-- description. Use this for :TaskAdd where the user may type metadata in the
+-- middle of a free-form sentence. Returns (description, fields, tags).
+--
+-- Safe against false positives because field names are a fixed list. URLs
+-- (`https://x`), times (`16:9`), and code fences don't match because their
+-- prefix (`https`, `16`, `` ``` ``) isn't in the known-field set.
+function M.parse_capture(line, extra_fields)
+  if type(line) ~= "string" then return "", {}, {} end
+  local known = field_set(extra_fields)
+  local tokens = tokenize(line)
+  local desc_toks = {}
+  local fields = {}
+  local tags = {}
+  for _, tok in ipairs(tokens) do
+    local fname, fval = tok:match('^([%w_]+):"(.-)"$')
+    if not fname then
+      fname, fval = tok:match("^([%w_]+):(%S+)$")
+    end
+    local tag_name = tok:match("^%+([%w_%-]+)$")
+    if fname and known[fname] and fval and fval ~= "" then
+      if DATE_FIELDS[fname] then
+        fields[fname] = M.human_date_to_tw(fval)
+      elseif fname == "effort" then
+        fields[fname] = M.parse_effort(fval)
+      elseif LIST_FIELDS[fname] then
+        local items = {}
+        for item in fval:gmatch("[^,]+") do
+          if item ~= "" then items[#items + 1] = item end
+        end
+        fields[fname] = items
+      else
+        fields[fname] = fval
+      end
+    elseif tag_name then
+      tags[#tags + 1] = tag_name
+    else
+      desc_toks[#desc_toks + 1] = tok
+    end
+  end
+  if #tags > 0 then
+    local seen, uniq = {}, {}
+    for _, t in ipairs(tags) do
+      if not seen[t] then seen[t] = true; uniq[#uniq + 1] = t end
+    end
+    table.sort(uniq)
+    fields.tags = uniq
+  end
+  return table.concat(desc_toks, " "), fields
+end
 
 function M.parse_task_line(line, extra_fields)
   if type(line) ~= "string" then return nil end
@@ -303,7 +478,11 @@ function M.parse_task_line(line, extra_fields)
   -- Scan right-to-left
   for i = #tokens, 1, -1 do
     local tok = tokens[i]
-    local fname, fval = tok:match("^([%w_]+):(%S+)$")
+    -- Match key:"value with spaces" first, then key:value
+    local fname, fval = tok:match('^([%w_]+):"(.-)"$')
+    if not fname then
+      fname, fval = tok:match("^([%w_]+):(%S+)$")
+    end
     local tag_name = tok:match("^%+([%w_%-]+)$")
     if fname and known[fname] then
       if DATE_FIELDS[fname] then
@@ -424,7 +603,13 @@ function M.serialize_task_line(task, opts)
         end
       end
       if val ~= nil then
-        parts[#parts + 1] = string.format("%s:%s", field, tostring(val))
+        local sval = tostring(val)
+        -- Quote multi-word values so the parser doesn't misread them as
+        -- description. Strip any existing quotes to keep the encoding simple.
+        if sval:match("%s") then
+          sval = '"' .. sval:gsub('"', "") .. '"'
+        end
+        parts[#parts + 1] = string.format("%s:%s", field, sval)
       end
     end
   end
@@ -684,11 +869,26 @@ local function collapse_recurring(tasks)
   return out
 end
 
--- args = { filter=list, sort=str, group=str|nil, fields=str|nil, no_collapse=bool }
+-- args = { filter=list, sort=str, group=str|nil, fields=str|nil, no_collapse=bool,
+--          urgency_coefficients=table|nil }
+-- Returns true if any element in `args` sets or filters the `status` field.
+-- Matches bare `status:pending`, `status.any:`, `status.not:completed`, etc.
+local function filter_has_status(args)
+  for _, a in ipairs(args or {}) do
+    if type(a) == "string" and a:match("^status[:.]") then return true end
+  end
+  return false
+end
+
 function M.render(args)
   args = args or {}
   local filter_args = args.filter or {}
-  if #filter_args == 0 then filter_args = { "status:pending" } end
+  -- Default to pending tasks unless the caller explicitly filters by status.
+  -- This keeps `:TaskFilter effort.before:1h` from returning completed tasks.
+  -- Users who want all statuses can pass `status.any:` or `status:pending status:completed`.
+  if not filter_has_status(filter_args) then
+    table.insert(filter_args, 1, "status:pending")
+  end
   local sort_spec = args.sort or "urgency-"
   local group_field = args.group
   local fields_filter
@@ -701,6 +901,23 @@ function M.render(args)
   local tasks = M.tw_export(filter_args)
 
   if not args.no_collapse then tasks = collapse_recurring(tasks) end
+
+  -- Apply multiplicative urgency coefficients: urgency += value * coefficient.
+  -- Non-numeric UDA values go through `resolve_value_mapper` so users can
+  -- configure how each field's raw value is coerced to a number.
+  local coeffs = args.urgency_coefficients
+  if coeffs and next(coeffs) then
+    local user_mappers = args.urgency_value_mappers
+    for _, task in ipairs(tasks) do
+      local adj = 0
+      for field, coeff in pairs(coeffs) do
+        local mapper = M.resolve_value_mapper(field, user_mappers)
+        local val = mapper(task[field])
+        if type(val) == "number" then adj = adj + val * coeff end
+      end
+      if adj ~= 0 then task.urgency = (task.urgency or 0) + adj end
+    end
+  end
 
   local descending = sort_spec:sub(-1) == "-"
   local sort_field = sort_spec:gsub("[+-]$", "")

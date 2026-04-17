@@ -1231,3 +1231,444 @@ class TestStartedIntegration:
         rendered = _render_to_string()
         assert "[>]" in rendered
         assert "Render started" in rendered
+
+
+# ---------------------------------------------------------------------------
+# TestMultiWordUdaRoundTrip — regression tests for the "editing a task with a
+# multi-word UDA value grows the description on every save" bug.
+#
+# Root cause: the serializer rendered `why:Collect legible evidence...` inline
+# without quoting. On parse-back, the tokenizer split on whitespace, so
+# `why:Collect` parsed as one field and `legible evidence...` dropped out of
+# the metadata scan. Everything before the split was treated as description,
+# so each save appended another copy of the metadata.
+#
+# Fix: serializer quotes values containing whitespace; tokenizer keeps
+# `key:"value with spaces"` as one token; parser accepts both quoted and
+# unquoted forms.
+# ---------------------------------------------------------------------------
+
+class TestMultiWordUdaRoundTrip:
+    """Reproduces the issue Matt hit where utility 16 → 12 duplicated the
+    description on every save because of a multi-word `why` UDA value."""
+
+    def _udas_env(self, tmp_path):
+        taskdata = tmp_path / ".task"
+        taskdata.mkdir()
+        taskrc = tmp_path / ".taskrc"
+        taskrc.write_text(
+            f"data.location={taskdata}\n"
+            "confirmation=off\n"
+            "bulk=0\n"
+            "uda.utility.type=numeric\n"
+            "uda.utility.label=Utility\n"
+            "uda.why.type=string\n"
+            "uda.why.label=Why\n"
+        )
+        env = os.environ.copy()
+        env["TASKRC"] = str(taskrc)
+        env["TASKDATA"] = str(taskdata)
+        return env
+
+    def test_tokenize_quoted_value_stays_one_token(self):
+        tokens = taskmd._tokenize_line(
+            'Talk to founders project:career utility:16 why:"Collect legible evidence"'
+        )
+        assert 'why:"Collect legible evidence"' in tokens
+        assert "legible" not in tokens
+        assert "evidence" not in tokens
+
+    def test_serialize_multi_word_uda_uses_quotes(self):
+        task = {
+            "status": "pending",
+            "description": "Do thing",
+            "why": "Collect legible evidence of founder fit",
+            "utility": 16,
+            "uuid": "abcdef12-1234-5678-9abc-def012345678",
+        }
+        line = taskmd.serialize_task_line(task, extra_fields=("utility", "why"))
+        assert 'why:"Collect legible evidence of founder fit"' in line
+        # utility is a single-word numeric — should NOT be quoted
+        assert "utility:16" in line
+        assert 'utility:"16"' not in line
+
+    def test_parse_quoted_multi_word_uda(self):
+        line = (
+            '- [ ] Do thing project:career utility:16 '
+            'why:"Collect legible evidence of founder fit" '
+            '<!-- uuid:abcdef12 -->'
+        )
+        task = taskmd.parse_task_line(line, extra_fields=("utility", "why"))
+        assert task is not None
+        assert task["description"] == "Do thing"
+        assert task["project"] == "career"
+        assert task["utility"] == "16"
+        assert task["why"] == "Collect legible evidence of founder fit"
+
+    def test_roundtrip_no_spurious_diff(self, tmp_path):
+        """Render → parse → compare: should be identical with 0 diff actions."""
+        env = self._udas_env(tmp_path)
+        original_run = taskmd._run
+
+        def patched(args, check=True):
+            return subprocess.run(args, capture_output=True, text=True, check=check, env=env)
+        taskmd._run = patched
+        try:
+            subprocess.run(
+                ["task", "rc.confirmation=off", "rc.bulk=0", "add",
+                 "Talk to founders", "project:career", "priority:H",
+                 "utility:16", "why:Collect legible evidence of founder fit"],
+                env=env, capture_output=True, check=True,
+            )
+
+            rendered = _render_to_string()
+
+            # Parse back every task line and compare to TW state
+            md_file = tmp_path / "roundtrip.md"
+            md_file.write_text(rendered)
+
+            import argparse
+            import io
+            from contextlib import redirect_stdout
+            ns = argparse.Namespace(file=str(md_file), dry_run=True, on_delete="done", force=False)
+            f = io.StringIO()
+            with redirect_stdout(f):
+                taskmd.cmd_apply(ns)
+            result = json.loads(f.getvalue())
+            assert result["actions"] == [], (
+                "Round-trip should produce zero actions but got: " + repr(result["actions"])
+            )
+        finally:
+            taskmd._run = original_run
+
+    def test_edit_utility_does_not_grow_description(self, tmp_path):
+        """The original bug: changing utility N → M appended metadata to description."""
+        env = self._udas_env(tmp_path)
+        original_run = taskmd._run
+
+        def patched(args, check=True):
+            return subprocess.run(args, capture_output=True, text=True, check=check, env=env)
+        taskmd._run = patched
+        try:
+            subprocess.run(
+                ["task", "rc.confirmation=off", "rc.bulk=0", "add",
+                 "Talk to founders", "project:career", "priority:H",
+                 "utility:16", "why:Collect legible evidence of founder fit"],
+                env=env, capture_output=True, check=True,
+            )
+
+            # First edit: 16 → 12
+            rendered = _render_to_string()
+            edited = rendered.replace("utility:16", "utility:12")
+            md_file = tmp_path / "edit1.md"
+            md_file.write_text(edited)
+            import argparse, io
+            from contextlib import redirect_stdout
+            ns = argparse.Namespace(file=str(md_file), dry_run=False, on_delete="done", force=False)
+            f = io.StringIO()
+            with redirect_stdout(f):
+                taskmd.cmd_apply(ns)
+
+            # After applying, verify TW state: description unchanged, utility=12
+            tasks = _tw_export_all(env)
+            assert len(tasks) == 1
+            assert tasks[0]["description"] == "Talk to founders", (
+                "Description should stay 'Talk to founders' but got: " + repr(tasks[0]["description"])
+            )
+            assert tasks[0]["utility"] == 12
+            assert tasks[0]["why"] == "Collect legible evidence of founder fit"
+
+            # Second edit: 12 → 16 — previously this would duplicate again
+            rendered2 = _render_to_string()
+            edited2 = rendered2.replace("utility:12", "utility:16")
+            md_file2 = tmp_path / "edit2.md"
+            md_file2.write_text(edited2)
+            ns2 = argparse.Namespace(file=str(md_file2), dry_run=False, on_delete="done", force=False)
+            f2 = io.StringIO()
+            with redirect_stdout(f2):
+                taskmd.cmd_apply(ns2)
+
+            tasks = _tw_export_all(env)
+            assert tasks[0]["description"] == "Talk to founders"
+            assert tasks[0]["utility"] == 16
+            assert tasks[0]["why"] == "Collect legible evidence of founder fit"
+        finally:
+            taskmd._run = original_run
+
+
+# ---------------------------------------------------------------------------
+# TestStatusFilterDefault — regression for "filter includes completed tasks"
+#
+# Bug: `task.nvim filter project:X` (or any non-status filter) returned
+# completed tasks in addition to pending. Expected: pending-only by default,
+# unless the filter explicitly includes a `status:` clause.
+# ---------------------------------------------------------------------------
+
+class TestStatusFilterDefault:
+    def test_filter_without_status_excludes_completed(self, tw_env, tmp_path):
+        _tw_add(tw_env, "Pending task", "project:X")
+        _tw_add(tw_env, "Done task", "project:X")
+        # Mark the second one done
+        all_tasks = _tw_export_all(tw_env)
+        done_uuid = next(t["uuid"] for t in all_tasks if t["description"] == "Done task")
+        subprocess.run(
+            ["task", "rc.confirmation=off", "rc.bulk=0", done_uuid, "done"],
+            env=tw_env, capture_output=True, check=True,
+        )
+
+        # Filter by project only (no status clause) — should only return pending
+        rendered = _render_to_string(["project:X"])
+        assert "Pending task" in rendered
+        assert "Done task" not in rendered, (
+            "filter without status clause must exclude completed tasks"
+        )
+
+    def test_explicit_status_any_includes_all(self, tw_env, tmp_path):
+        _tw_add(tw_env, "Pending task", "project:X")
+        _tw_add(tw_env, "Done task", "project:X")
+        all_tasks = _tw_export_all(tw_env)
+        done_uuid = next(t["uuid"] for t in all_tasks if t["description"] == "Done task")
+        subprocess.run(
+            ["task", "rc.confirmation=off", "rc.bulk=0", done_uuid, "done"],
+            env=tw_env, capture_output=True, check=True,
+        )
+
+        # User opts in to all statuses with status.any: — both should appear
+        rendered = _render_to_string(["status.any:", "project:X"])
+        assert "Pending task" in rendered
+        assert "Done task" in rendered
+
+    def test_explicit_status_pending_works(self, tw_env, tmp_path):
+        _tw_add(tw_env, "Pending task", "project:X")
+        rendered = _render_to_string(["status:pending", "project:X"])
+        assert "Pending task" in rendered
+
+
+# ---------------------------------------------------------------------------
+# TestStartStopRoundTrip — regression for "[ ] → [>] save says 'no changes'"
+#
+# Bug: editing a task line from `[ ]` to `[>]` and saving showed "no changes"
+# instead of starting the task. Root cause cited in code comments + tests.
+# ---------------------------------------------------------------------------
+
+class TestStartStopRoundTrip:
+    def test_open_to_started_emits_start_action(self):
+        line_pending = "- [ ] Do thing project:X <!-- uuid:abcdef12 -->"
+        line_started = "- [>] Do thing project:X <!-- uuid:abcdef12 -->"
+        parsed_p = taskmd.parse_task_line(line_pending)
+        parsed_s = taskmd.parse_task_line(line_started)
+        assert parsed_p is not None
+        assert parsed_s is not None
+        assert parsed_p.get("_started") in (None, False)
+        assert parsed_s.get("_started") is True
+
+    def test_apply_diff_emits_start_for_status_change(self, tw_env, tmp_path):
+        _tw_add(tw_env, "Start me", "project:X")
+        all_tasks = _tw_export_all(tw_env)
+        full_uuid = all_tasks[0]["uuid"]
+        uuid_short = full_uuid[:8]
+
+        # Initial render shows [ ]
+        rendered = _render_to_string()
+        assert "[ ] Start me" in rendered
+        assert "[>] Start me" not in rendered
+
+        # Edit [ ] → [>] and apply
+        edited = rendered.replace("- [ ] Start me", "- [>] Start me")
+        result = _apply_markdown(edited, tmp_path, dry_run=True)
+        actions = result["actions"]
+        assert any(a["type"] == "start" and a["uuid"] == full_uuid for a in actions), (
+            "[ ] → [>] must emit a 'start' action; got: " + repr(actions)
+        )
+
+    def test_apply_actually_starts_task_in_tw(self, tw_env, tmp_path):
+        _tw_add(tw_env, "Real start", "project:X")
+        all_tasks = _tw_export_all(tw_env)
+        full_uuid = all_tasks[0]["uuid"]
+
+        rendered = _render_to_string()
+        edited = rendered.replace("- [ ] Real start", "- [>] Real start")
+
+        # Real apply (not dry-run)
+        _apply_markdown(edited, tmp_path)
+
+        # TW state should now have start set
+        after = _tw_export_all(tw_env)
+        assert after[0].get("start") is not None, (
+            "Task should be started in TW after [ ] → [>] save"
+        )
+
+    def test_started_to_open_emits_stop_action(self, tw_env, tmp_path):
+        _tw_add(tw_env, "Stop me", "project:X")
+        all_tasks = _tw_export_all(tw_env)
+        full_uuid = all_tasks[0]["uuid"]
+
+        # Start it via TW so the rendered line is [>]
+        subprocess.run(
+            ["task", "rc.confirmation=off", "rc.bulk=0", full_uuid, "start"],
+            env=tw_env, capture_output=True, check=True,
+        )
+
+        rendered = _render_to_string()
+        assert "[>] Stop me" in rendered
+
+        # Edit [>] → [ ] and apply (use force; the buffer-only edit doesn't
+        # carry the rendered_at conflict resolution for this fast-path test)
+        edited = rendered.replace("- [>] Stop me", "- [ ] Stop me")
+        result = _apply_markdown(edited, tmp_path, dry_run=True)
+        actions = result["actions"]
+        assert any(a["type"] == "stop" for a in actions), (
+            "[>] → [ ] must emit a 'stop' action; got: " + repr(actions)
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestDeleteRoundTrip — regression for "deleting tasks isn't working"
+#
+# Bug: removing a line and saving was reported as not deleting the task. In
+# practice the Lua/Python diff did emit delete, but lock it in here.
+# ---------------------------------------------------------------------------
+
+class TestDeleteRoundTrip:
+    def test_removed_line_emits_delete_action(self, tw_env, tmp_path):
+        _tw_add(tw_env, "Keep me", "project:X")
+        _tw_add(tw_env, "Delete me", "project:X")
+        all_tasks = _tw_export_all(tw_env)
+        delete_uuid = next(t["uuid"] for t in all_tasks if t["description"] == "Delete me")
+
+        rendered = _render_to_string()
+        # Remove the "Delete me" task line
+        kept_lines = [l for l in rendered.split("\n") if "Delete me" not in l]
+        edited = "\n".join(kept_lines)
+
+        result = _apply_markdown(edited, tmp_path, dry_run=True, on_delete="delete")
+        actions = result["actions"]
+        assert any(a["type"] == "delete" and a["uuid"] == delete_uuid for a in actions), (
+            "removing a task line with on_delete=delete must emit a 'delete' action; got: "
+            + repr(actions)
+        )
+
+    def test_apply_actually_deletes_task_in_tw(self, tw_env, tmp_path):
+        _tw_add(tw_env, "Keep me", "project:X")
+        _tw_add(tw_env, "Delete me", "project:X")
+        rendered = _render_to_string()
+        kept_lines = [l for l in rendered.split("\n") if "Delete me" not in l]
+        edited = "\n".join(kept_lines)
+
+        _apply_markdown(edited, tmp_path, on_delete="delete")
+
+        after = _tw_export_all(tw_env)
+        descriptions = [t["description"] for t in after]
+        statuses = {t["description"]: t["status"] for t in after}
+        assert "Keep me" in descriptions
+        assert statuses.get("Delete me") == "deleted", (
+            "Delete me should have status=deleted in TW; full state: " + repr(statuses)
+        )
+
+    def test_on_delete_done_emits_done_not_delete(self, tw_env, tmp_path):
+        _tw_add(tw_env, "Auto-done", "project:X")
+        rendered = _render_to_string()
+        # Strip task lines
+        kept_lines = [l for l in rendered.split("\n") if "Auto-done" not in l]
+        edited = "\n".join(kept_lines)
+
+        result = _apply_markdown(edited, tmp_path, dry_run=True, on_delete="done")
+        actions = result["actions"]
+        assert any(a["type"] == "done" for a in actions)
+        assert not any(a["type"] == "delete" for a in actions)
+
+
+# ---------------------------------------------------------------------------
+# TestDurationFilterMinutes — regression for "effort<10m doesn't filter"
+#
+# Bug: TW3 interprets bare `Nm` as N MONTHS, not minutes. So `effort<10m`
+# matches every task. The plugin rewrites the suffix to `min` automatically.
+# ---------------------------------------------------------------------------
+
+class TestDurationFilterMinutes:
+    def _duration_env(self, tmp_path):
+        taskdata = tmp_path / ".task"
+        taskdata.mkdir()
+        taskrc = tmp_path / ".taskrc"
+        taskrc.write_text(
+            f"data.location={taskdata}\n"
+            "confirmation=off\n"
+            "bulk=0\n"
+            "uda.effort.type=duration\n"
+            "uda.effort.label=Effort\n"
+        )
+        env = os.environ.copy()
+        env["TASKRC"] = str(taskrc)
+        env["TASKDATA"] = str(taskdata)
+        # patch _run
+        original = taskmd._run
+        def patched(args, check=True):
+            return subprocess.run(args, capture_output=True, text=True, check=check, env=env)
+        taskmd._run = patched
+        return env, original
+
+    def test_effort_lt_10m_filters_correctly(self, tmp_path):
+        env, restore = self._duration_env(tmp_path)
+        try:
+            for e in ("PT5M", "PT15M", "PT1H"):
+                subprocess.run(
+                    ["task", "rc.confirmation=off", "rc.bulk=0", "add",
+                     f"Task {e}", "project:X", f"effort:{e}"],
+                    env=env, capture_output=True, check=True,
+                )
+            # Without rewrite, this would return all 3 tasks (TW interprets m as months)
+            tasks = taskmd.tw_export(["effort<10m"])
+            assert len(tasks) == 1, (
+                f"effort<10m should match only PT5M, got {len(tasks)} tasks: "
+                + repr([t['description'] for t in tasks])
+            )
+            assert tasks[0]["effort"] == "PT5M"
+        finally:
+            taskmd._run = restore
+
+    def test_effort_below_30m_filters_correctly(self, tmp_path):
+        env, restore = self._duration_env(tmp_path)
+        try:
+            for e in ("PT5M", "PT15M", "PT45M", "PT1H"):
+                subprocess.run(
+                    ["task", "rc.confirmation=off", "rc.bulk=0", "add",
+                     f"Task {e}", "project:X", f"effort:{e}"],
+                    env=env, capture_output=True, check=True,
+                )
+            tasks = taskmd.tw_export(["effort.below:30m"])
+            assert len(tasks) == 2, (
+                "effort.below:30m should match PT5M + PT15M, got "
+                + repr([t['description'] for t in tasks])
+            )
+        finally:
+            taskmd._run = restore
+
+    def test_explicit_min_unit_unchanged(self, tmp_path):
+        """Already-disambiguated forms pass through unchanged."""
+        env, restore = self._duration_env(tmp_path)
+        try:
+            subprocess.run(
+                ["task", "rc.confirmation=off", "rc.bulk=0", "add",
+                 "Quick", "project:X", "effort:PT5M"],
+                env=env, capture_output=True, check=True,
+            )
+            tasks = taskmd.tw_export(["effort<10min"])
+            assert len(tasks) == 1
+            tasks = taskmd.tw_export(["effort<PT10M"])
+            assert len(tasks) == 1
+        finally:
+            taskmd._run = restore
+
+    def test_non_duration_filter_unaffected(self, tmp_path):
+        """Numeric filters like urgency<10 must still work (TW handles them natively)."""
+        env, restore = self._duration_env(tmp_path)
+        try:
+            subprocess.run(
+                ["task", "rc.confirmation=off", "rc.bulk=0", "add",
+                 "Test", "project:X"],
+                env=env, capture_output=True, check=True,
+            )
+            tasks = taskmd.tw_export(["urgency<10"])
+            assert len(tasks) == 1
+        finally:
+            taskmd._run = restore

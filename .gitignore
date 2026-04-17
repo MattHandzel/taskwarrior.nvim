@@ -5,3 +5,14 @@ __pycache__/
 dist/
 build/
 .venv/
+
+# Internal / session-local planning artifacts. Kept on disk for the author's
+# reference but excluded from the public repo.
+ENGINE-LOG.md
+STATE_HISTORY.md
+STRESS-TEST-REPORT.md
+.internal/
+.claude/
+
+# Lua test-harness dependencies (cloned on-demand by tests/lua/bootstrap.sh)
+tests/lua/.deps/

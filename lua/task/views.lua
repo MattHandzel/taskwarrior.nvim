@@ -126,6 +126,89 @@ local function tw_date_to_ymd(val)
 end
 
 -- ---------------------------------------------------------------------------
+-- Shared task-line renderer (used by tree and calendar views)
+-- Returns (line_text, highlights[]) where each highlight = { col_start, col_end, hl_group }
+-- @param task   table   taskwarrior export object
+-- @param prefix string  leading whitespace / tree connectors (already rendered by caller)
+-- ---------------------------------------------------------------------------
+
+local function render_task_line(task, prefix)
+  prefix = prefix or ""
+  local hls = {}
+  local col = #prefix
+
+  -- status indicator: [x] dim, [>] green, [ ] neutral
+  local status, status_hl
+  if task.status == "completed" then
+    status = "[x]"; status_hl = "TaskViewHeader"
+  elseif task.start then
+    status = "[>]"; status_hl = "TaskViewToday"
+  else
+    status = "[ ]"
+  end
+  if status_hl then table.insert(hls, { col, col + #status, status_hl }) end
+  col = col + #status + 1 -- +1 for the space after status
+
+  -- description (uncolored — let inline metadata pop)
+  local desc = (task.description or ""):gsub("[\r\n]", " ")
+  col = col + #desc
+
+  -- !priority (red H / orange M / green L)
+  local prio_s = ""
+  if task.priority then
+    prio_s = " !" .. task.priority
+    local hl = task.priority == "H" and "TaskViewUrgHigh"
+            or task.priority == "M" and "TaskViewUrgMed"
+            or "TaskViewUrgLow"
+    table.insert(hls, { col, col + #prio_s, hl })
+    col = col + #prio_s
+  end
+
+  -- @project (teal)
+  local proj_s = ""
+  if task.project then
+    proj_s = " @" .. task.project
+    table.insert(hls, { col, col + #proj_s, "TaskViewProject" })
+    col = col + #proj_s
+  end
+
+  -- +tags (blue)
+  local tags_s = ""
+  for _, tag in ipairs(task.tags or {}) do
+    local s = " +" .. tag
+    tags_s = tags_s .. s
+    table.insert(hls, { col, col + #s, "TaskViewTag" })
+    col = col + #s
+  end
+
+  -- due date (red overdue / green today / yellow future)
+  local due_s = ""
+  local due = tw_date_to_ymd(task.due)
+  if due then
+    due_s = " " .. due
+    local today = os.date("!%Y-%m-%d")
+    local hl = due < today and "TaskViewOverdue"
+            or due == today and "TaskViewToday"
+            or "TaskViewDate"
+    table.insert(hls, { col, col + #due_s, hl })
+    col = col + #due_s
+  end
+
+  -- urgency score
+  local urg_s = ""
+  if task.urgency then
+    urg_s = string.format(" (%.1f)", task.urgency)
+    local hl = task.urgency >= 8 and "TaskViewUrgHigh"
+            or task.urgency >= 4 and "TaskViewUrgMed"
+            or "TaskViewUrgLow"
+    table.insert(hls, { col, col + #urg_s, hl })
+  end
+
+  local line = prefix .. status .. " " .. desc .. prio_s .. proj_s .. tags_s .. due_s .. urg_s
+  return line, hls
+end
+
+-- ---------------------------------------------------------------------------
 -- Refresh all open views
 -- ---------------------------------------------------------------------------
 
@@ -317,25 +400,18 @@ function M.tree()
 
     local function render_tree(task, prefix, is_last)
       local connector = is_last and "└── " or "├── "
-      local status_char = task.start and "[>]" or "[ ]"
-      local desc = (task.description or ""):gsub("\n", " "):gsub("\r", "")
-      local urgency = task.urgency and string.format(" (%.1f)", task.urgency) or ""
-      local line = prefix .. connector .. status_char .. " " .. desc .. urgency
+      local full_prefix = prefix .. connector
+      local line, task_hls = render_task_line(task, full_prefix)
       table.insert(lines, line)
       local li = #lines - 1
 
-      -- Color tree connectors
+      -- Color tree connectors (the prefix portion before task content)
       local conn_end = #prefix + #connector
       table.insert(highlights, { li, 0, conn_end, "TaskViewTreeConn" })
 
-      -- Color urgency
-      if task.urgency then
-        local urg_start = #line - #urgency
-        local urg_hl
-        if task.urgency >= 8 then urg_hl = "TaskViewUrgHigh"
-        elseif task.urgency >= 4 then urg_hl = "TaskViewUrgMed"
-        else urg_hl = "TaskViewUrgLow" end
-        table.insert(highlights, { li, urg_start, #line, urg_hl })
+      -- Apply all task-line highlights
+      for _, hl in ipairs(task_hls) do
+        table.insert(highlights, { li, hl[1], hl[2], hl[3] })
       end
 
       local kids = children[task.uuid] or {}
@@ -521,23 +597,11 @@ function M.calendar()
       table.insert(highlights, { #lines - 1, 0, #sep, "TaskViewSeparator" })
 
       for _, t in ipairs(by_date[date]) do
-        local status = t.start and "[>]" or "[ ]"
-        local prio = t.priority and (" !" .. t.priority) or ""
-        local proj = t.project and (" @" .. t.project) or ""
-        local desc = (t.description or ""):gsub("\n", " "):gsub("\r", "")
-        local task_line = string.format("    %s %s%s%s", status, desc, prio, proj)
-        table.insert(lines, task_line)
+        local line, task_hls = render_task_line(t, "    ")
+        table.insert(lines, line)
         local li = #lines - 1
-        -- Color project
-        if t.project then
-          local proj_start = #task_line - #proj
-          table.insert(highlights, { li, proj_start, #task_line, "TaskViewProject" })
-        end
-        -- Color priority
-        if t.priority then
-          local prio_start = #task_line - #proj - #prio
-          local prio_hl = t.priority == "H" and "TaskViewUrgHigh" or (t.priority == "M" and "TaskViewUrgMed" or "TaskViewUrgLow")
-          table.insert(highlights, { li, prio_start, prio_start + #prio, prio_hl })
+        for _, hl in ipairs(task_hls) do
+          table.insert(highlights, { li, hl[1], hl[2], hl[3] })
         end
       end
       table.insert(lines, "")
@@ -550,15 +614,11 @@ function M.calendar()
       table.insert(lines, sep)
       table.insert(highlights, { #lines - 1, 0, #sep, "TaskViewSeparator" })
       for _, t in ipairs(no_due) do
-        local status = t.start and "[>]" or "[ ]"
-        local proj = t.project and (" @" .. t.project) or ""
-        local desc = (t.description or ""):gsub("\n", " "):gsub("\r", "")
-        local task_line = string.format("    %s %s%s", status, desc, proj)
-        table.insert(lines, task_line)
-        if t.project then
-          local li = #lines - 1
-          local proj_start = #task_line - #proj
-          table.insert(highlights, { li, proj_start, #task_line, "TaskViewProject" })
+        local line, task_hls = render_task_line(t, "    ")
+        table.insert(lines, line)
+        local li = #lines - 1
+        for _, hl in ipairs(task_hls) do
+          table.insert(highlights, { li, hl[1], hl[2], hl[3] })
         end
       end
       table.insert(lines, "")

@@ -8,12 +8,6 @@ local ns = vim.api.nvim_create_namespace("task_nvim_diff_preview")
 local _enabled = {}    -- { [bufnr] = true }
 local _debounce = {}   -- { [bufnr] = timer }
 
-local function taskmd_path()
-  local cfg = require("task.config").options.taskmd_path
-  if cfg and cfg ~= "" then return cfg end
-  return vim.fn.expand("~/Projects/task.nvim/bin/taskmd")
-end
-
 local function uuid_for_line(line)
   return line:match("<!%-%- uuid:([0-9a-fA-F]+) %-%->")
 end
@@ -74,29 +68,17 @@ local function render_actions(bufnr, actions)
   end
 end
 
+-- Synchronous call into the Lua backend. The expensive part is `task export`
+-- inside taskmd.apply; on a 300-task db this takes ~50–150ms. Since the caller
+-- is already debounced 400ms after typing stops, the cost is acceptable for now.
 local function run_dry_run(bufnr, cb)
-  local tmp = vim.fn.tempname()
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  vim.fn.writefile(lines, tmp)
-
-  local cmd = { taskmd_path(), "apply", "--dry-run", tmp }
-  local out_lines = {}
-  vim.fn.jobstart(cmd, {
-    stdout_buffered = true,
-    on_stdout = function(_, data)
-      if data then for _, l in ipairs(data) do table.insert(out_lines, l) end end
-    end,
-    on_exit = function()
-      os.remove(tmp)
-      local joined = table.concat(out_lines, "\n")
-      local ok, parsed = pcall(vim.fn.json_decode, joined)
-      if not ok or type(parsed) ~= "table" then
-        vim.schedule(function() cb({}) end)
-        return
-      end
-      vim.schedule(function() cb(parsed.actions or {}) end)
-    end,
-  })
+  local content = table.concat(lines, "\n")
+  local ok_m, taskmd = pcall(require, "task.taskmd")
+  if not ok_m then cb({}); return end
+  local ok_a, result = pcall(taskmd.apply, { content = content, dry_run = true })
+  if not ok_a or type(result) ~= "table" then cb({}); return end
+  cb(result.actions or {})
 end
 
 function M.update(bufnr)

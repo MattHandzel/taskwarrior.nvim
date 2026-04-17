@@ -1,0 +1,109 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.8", "3.10", "3.12"]
+        exclude:
+          # macOS runners no longer ship with 3.8; stick to 3.10+ there.
+          - os: macos-latest
+            python-version: "3.8"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install taskwarrior (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y taskwarrior
+          task --version
+      - name: Install taskwarrior (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install task
+          task --version
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install pytest
+      - run: python3 -m pytest tests/ -v
+
+  lua-load:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install neovim
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y neovim
+          nvim --version | head -1
+      - name: Verify all Lua modules load and :help task loads
+        run: |
+          nvim --headless -u NONE --cmd "set rtp+=." -c "lua
+            local mods = {'task','task.config','task.taskmd','task.views','task.diff_preview','task.feedback','task.cmp','task.statusline','task.health'}
+            local failed = 0
+            for _, m in ipairs(mods) do
+              local ok, err = pcall(require, m)
+              if not ok then
+                failed = failed + 1
+                io.stderr:write('FAIL ' .. m .. ': ' .. tostring(err) .. '\n')
+              end
+            end
+            -- Verify doc/task.txt parses as a valid help file (tags present).
+            local doc = io.open('doc/task.txt', 'r')
+            if not doc then
+              failed = failed + 1
+              io.stderr:write('FAIL doc/task.txt missing\n')
+            else
+              local content = doc:read('*all')
+              doc:close()
+              if not content:match('%*task%.nvim%*') then
+                failed = failed + 1
+                io.stderr:write('FAIL doc/task.txt has no *task.nvim* help tag\n')
+              end
+            end
+            if failed > 0 then os.exit(1) end
+            print('all modules load')
+          " -c "qa!"
+
+  lua-tests:
+    name: Lua tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Neovim
+        uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+      - name: Install Taskwarrior
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y taskwarrior
+      - name: Run Lua test suite
+        run: ./tests/lua/bootstrap.sh
+
+  lint:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stylua
+        run: |
+          curl -L https://github.com/JohnnyMorganz/StyLua/releases/latest/download/stylua-linux-x86_64.zip -o /tmp/stylua.zip
+          unzip -o /tmp/stylua.zip -d /tmp
+          sudo install /tmp/stylua /usr/local/bin/stylua
+      - run: stylua --check lua/ plugin/ ftplugin/ || true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - run: ruff check bin/taskmd tests/ || true
