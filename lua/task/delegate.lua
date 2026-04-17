@@ -10,6 +10,35 @@ local function uuid_from_line(line)
   return line:match("<!%-%-.*uuid:([0-9a-fA-F]+).*%-%->")
 end
 
+-- Legacy single-task export helper (back-compat for M.delegate in init.lua).
+function M.delegate_one()
+  local bufnr = vim.api.nvim_get_current_buf()
+  if vim.b[bufnr].task_filter == nil then
+    vim.notify("task.nvim: not in a task buffer", vim.log.levels.WARN)
+    return
+  end
+  local line = vim.api.nvim_get_current_line()
+  local short_uuid = uuid_from_line(line)
+  if not short_uuid then
+    vim.notify("task.nvim: no UUID on this line", vim.log.levels.WARN)
+    return
+  end
+  local out, ok = run(
+    string.format("task rc.bulk=0 rc.confirmation=off rc.json.array=on %s export", short_uuid))
+  if not ok or not out or out == "" then
+    vim.notify("task.nvim: failed to export task", vim.log.levels.ERROR)
+    return
+  end
+  local json_start = out:find("%[")
+  if json_start and json_start > 1 then out = out:sub(json_start) end
+  local parsed_ok, tasks = pcall(vim.fn.json_decode, out)
+  if not parsed_ok or type(tasks) ~= "table" or #tasks == 0 then
+    vim.notify("task.nvim: failed to parse task", vim.log.levels.ERROR)
+    return
+  end
+  return tasks[1], short_uuid
+end
+
 -- ---------------------------------------------------------------------------
 -- TaskDelegate — popup form + interactive terminal
 -- ---------------------------------------------------------------------------

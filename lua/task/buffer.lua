@@ -94,6 +94,8 @@ local function render(filter, sort, group)
   return out
 end
 
+M.render = render
+
 -- ---------------------------------------------------------------------------
 -- Custom sort: re-order task lines within groups by custom_urgency
 -- ---------------------------------------------------------------------------
@@ -706,6 +708,75 @@ function M.setup_buf_autocmds(bufnr, on_write_fn)
         end
       end,
     })
+  end
+end
+
+-- ---------------------------------------------------------------------------
+-- open_task_buf: create (or reuse) a task buffer for the given filter.
+-- on_write_fn: callback(bufnr) for BufWriteCmd (M._on_write from init)
+-- detect_project_fn: callback() -> project_name|nil
+-- ---------------------------------------------------------------------------
+
+function M.open_task_buf(filter_str, on_write_fn, detect_project_fn)
+  local config = require("task.config")
+  filter_str = filter_str or ""
+
+  -- Auto-detect project filter from cwd when no filter is given
+  if filter_str == "" and detect_project_fn then
+    local project = detect_project_fn()
+    if project then
+      filter_str = "project:" .. project
+    end
+  end
+
+  local sort = config.options.sort or "urgency-"
+  local group = config.options.group
+
+  -- Reuse existing task buffer with same filter
+  for _, b in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_valid(b) and vim.b[b].task_filter == filter_str then
+      vim.api.nvim_win_set_buf(0, b)
+      vim.wo[0].conceallevel = 3
+      vim.wo[0].concealcursor = "nvic"
+      M.refresh_buf(b)
+      return
+    end
+  end
+
+  local out = render(filter_str, sort, group)
+  if not out then return end
+
+  local bufnr = vim.api.nvim_create_buf(true, false)
+  vim.bo[bufnr].buftype = "acwrite"
+  vim.bo[bufnr].filetype = "taskmd"
+  vim.bo[bufnr].swapfile = false
+  vim.bo[bufnr].bufhidden = "hide"
+
+  M.set_buf_lines(bufnr, out)
+  vim.bo[bufnr].modified = false
+
+  vim.b[bufnr].task_filter = filter_str
+  vim.b[bufnr].task_sort = sort
+  vim.b[bufnr].task_group = group
+
+  M.setup_buf_syntax(bufnr)
+  M.setup_buf_keymaps(bufnr)
+  M.setup_buf_autocmds(bufnr, on_write_fn)
+  apply_virtual_text(bufnr)
+
+  vim.api.nvim_win_set_buf(0, bufnr)
+  vim.wo[0].conceallevel = 3
+  vim.wo[0].concealcursor = "nvic"
+
+  -- Set name safely — wipe stale buffer with same name if needed
+  local buf_name = "Tasks: " .. filter_str
+  local ok = pcall(vim.api.nvim_buf_set_name, bufnr, buf_name)
+  if not ok then
+    local stale = vim.fn.bufnr(buf_name)
+    if stale ~= -1 and stale ~= bufnr then
+      pcall(vim.api.nvim_buf_delete, stale, { force = true })
+      pcall(vim.api.nvim_buf_set_name, bufnr, buf_name)
+    end
   end
 end
 

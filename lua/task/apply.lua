@@ -116,6 +116,33 @@ function M.on_write(bufnr, refresh_fn, do_apply_fn)
   end
 end
 
+-- undo: walk back the last N taskwarrior actions recorded on bufnr.
+-- refresh_fn: callback(bufnr) to re-render after undo completes.
+function M.undo(bufnr, refresh_fn)
+  local count = vim.b[bufnr].task_last_action_count
+  if not count or count == 0 then
+    vim.notify("task.nvim: nothing to undo")
+    return
+  end
+  vim.ui.select({ "Undo", "Cancel" }, {
+    prompt = string.format("Undo %d action(s) from last save?", count),
+  }, function(choice)
+    if choice ~= "Undo" then return end
+    local failed = 0
+    for _ = 1, count do
+      local _, ok = run("task rc.bulk=0 rc.confirmation=off undo")
+      if not ok then failed = failed + 1 end
+    end
+    vim.b[bufnr].task_last_action_count = nil
+    if failed > 0 then
+      vim.notify(string.format("task.nvim: undo completed (%d failed)", failed), vim.log.levels.WARN)
+    else
+      vim.notify(string.format("task.nvim: undid %d action(s)", count))
+    end
+    refresh_fn(bufnr)
+  end)
+end
+
 -- do_apply_and_refresh: apply tmpfile and refresh the buffer.
 -- refresh_fn: callback(bufnr) to re-render
 function M.do_apply_and_refresh(bufnr, tmpfile, on_delete, refresh_fn)
