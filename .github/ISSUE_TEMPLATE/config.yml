@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Ask a question
+    url: https://github.com/MattHandzel/task.nvim/discussions
+    about: Not sure if it's a bug? Start a discussion before filing an issue.
