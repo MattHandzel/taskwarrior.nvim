@@ -8,6 +8,16 @@ endif
 runtime! syntax/markdown.vim
 unlet! b:current_syntax
 
+" Task descriptions may contain literal ``` (e.g. ASCII art, code examples, or
+" quoted prose with backticks). Markdown's fenced-code-block regions would open
+" on the first ``` and never close, painting every subsequent task line as
+" code. Clear those regions so task lines stay line-scoped.
+silent! syntax clear markdownCode
+silent! syntax clear markdownCodeBlock
+silent! syntax clear markdownCodeDelimiter
+silent! syntax clear markdownHighlight
+silent! syntax clear markdownFencedCodeBlock
+
 " Header comment (filter / sort / rendered_at).
 syntax match taskmdHeader /^<!--\s*taskmd\s.*-->$/ containedin=ALL
 
