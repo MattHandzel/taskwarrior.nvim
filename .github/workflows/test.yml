@@ -74,6 +74,23 @@ jobs:
             print('all modules load')
           " -c "qa!"
 
+  lua-tests:
+    name: Lua tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Neovim
+        uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+      - name: Install Taskwarrior
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y taskwarrior
+      - name: Run Lua test suite
+        run: ./tests/lua/bootstrap.sh
+
   lint:
     runs-on: ubuntu-latest
     continue-on-error: true
