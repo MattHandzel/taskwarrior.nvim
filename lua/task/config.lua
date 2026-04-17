@@ -45,13 +45,6 @@ M.defaults = {
 	-- Non-linear custom urgency: a Lua function(task) -> number.
 	-- Receives the full task table (from TW export). Return adjusted urgency.
 	-- When set, tasks are re-sorted by this value instead of TW urgency.
-	-- Example:
-	--   custom_urgency = function(task)
-	--     local base = task.urgency or 0
-	--     local utility = tonumber(task.utility) or 0
-	--     local effort_mins = tonumber(task.effort_minutes) or 60
-	--     return base + math.log(utility + 1) * 3 - math.sqrt(effort_mins) * 0.1
-	--   end
 	custom_urgency = nil,
 	-- Copy the Taskwarrior data directory to stdpath("data")/task.nvim/backups/
 	-- before any :w applies changes. Keeps the ten most recent backups and
@@ -60,7 +53,7 @@ M.defaults = {
 	auto_backup = true,
 	auto_backup_keep = 10, -- number of recent backups to retain (>=1)
 	feedback_endpoint = false, -- set to "https://matthandzel.com/api/task-feedback" to enable
-	feedback_github_repo = "MattHandzel/task.nvim",                  -- for GitHub issue fallback
+	feedback_github_repo = "MattHandzel/task.nvim", -- for GitHub issue fallback
 	-- :TaskDelegate — claude-code delegation defaults. Each field is overridable
 	-- per-invocation via the popup prompt.
 	delegate = {
@@ -79,6 +72,7 @@ M.defaults = {
 M.options = {}
 
 function M.setup(opts)
+	require("task.validate").validate(opts)
 	M.options = vim.tbl_deep_extend("force", {}, M.defaults, opts or {})
 end
 
