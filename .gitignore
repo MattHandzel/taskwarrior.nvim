@@ -13,3 +13,6 @@ STATE_HISTORY.md
 STRESS-TEST-REPORT.md
 .internal/
 .claude/
+
+# Lua test-harness dependencies (cloned on-demand by tests/lua/bootstrap.sh)
+tests/lua/.deps/
