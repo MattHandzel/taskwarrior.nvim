@@ -6,34 +6,67 @@ follows [Semantic Versioning](https://semver.org/) once tagged.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-04-17
+
+Big release: splits the 2300-line `init.lua` monolith into focused
+modules, adds the first real Lua test suite, introduces data-safety
+defaults, and fixes a handful of user-reported bugs.
+
 ### Added
-- `plugin/task.lua` entrypoint — `:Task` is registered without requiring an
-  explicit `setup()` call.
-- `ftplugin/taskmd.lua` and `syntax/taskmd.vim` — native syntax
-  highlighting for rendered task buffers.
-- `doc/task.txt` — vim-help reference. `:help task.nvim` now works.
-- `auto_backup` (default `true`): copies `~/.task` to
-  `stdpath("data")/task.nvim/backups/<timestamp>/` before every apply.
-  Keeps the ten most recent backups.
-- Issue and pull-request templates under `.github/`.
-- `CONTRIBUTING.md` and this `CHANGELOG.md`.
+- **Modular architecture.** `lua/task/init.lua` is now 273 lines (down
+  from 2264). Domain logic moved into `buffer.lua`, `apply.lua`,
+  `capture.lua`, `delegate.lua`, `review.lua`, `saved_views.lua`,
+  `projects.lua`, `completion.lua`, `commands.lua`, `help.lua`,
+  `validate.lua`.
+- **Lua test suite.** 121 assertions across 4 specs under `tests/lua/`
+  (parser, render, diff, config) using plenary.nvim's busted runner.
+  Bootstrap via `./tests/lua/bootstrap.sh`; CI runs it on every push.
+- **Validated setup.** `require("task").setup({...})` now rejects
+  unknown keys with typo-aware suggestions, and type-checks every
+  known key including nested `delegate.*`, `urgency_coefficients`,
+  `urgency_value_mappers`, and `filters` / `projects`.
+- **Auto-backup of Taskwarrior data** before every apply. Default
+  `auto_backup = true` copies `~/.task` to
+  `stdpath("data")/task.nvim/backups/<timestamp>/`; rolling retention
+  of the ten most recent backups.
+- **Distribution surface.** `plugin/task.lua` entrypoint (`:Task`
+  exists without explicit `setup()`), `ftplugin/taskmd.lua`,
+  `syntax/taskmd.vim`, `doc/task.txt` (`:help task.nvim`).
+- **:TaskFeedback** command: structured feedback buffer that posts
+  JSON to a configurable endpoint or opens a prefilled GitHub issue.
+- **Community health.** `CONTRIBUTING.md`, `CHANGELOG.md`,
+  `SECURITY.md`, `.github/ISSUE_TEMPLATE/`, `PULL_REQUEST_TEMPLATE.md`.
+- **Lint configuration.** `stylua.toml`, `pyproject.toml` (ruff),
+  `.editorconfig`. CI lint job runs advisory checks.
+- **CI matrix.** Ubuntu + macOS × Python 3.8 / 3.10 / 3.12; added
+  help-tag smoke verifying `doc/task.txt`.
 
 ### Changed
-- `delegate.flags` default is now `""` (empty) instead of
-  `--dangerously-skip-permissions`. The previous default silently disabled
-  Claude Code's tool-permission prompts for every user; now it must be
-  opted into explicitly.
-- `refresh_buf()` guards against stale bufnrs at entry, and the User
-  `TaskNvimRefresh` autocmd body is wrapped in `pcall` — prevents "Invalid
-  buffer id" errors after `:bwipeout`.
+- **`delegate.flags` default is now `""`** (was
+  `--dangerously-skip-permissions`). The old default silently
+  disabled Claude Code's tool-permission prompts for every user;
+  opting in is now explicit.
+- **Views** render with consistent task-line coloring across tree,
+  calendar, summary — shared `render_task_line()` helper.
+- **Urgency coefficients** are now applied multiplicatively inside
+  the Lua backend (via `urgency_value_mappers`) rather than being
+  passed as `rc.urgency.uda.FIELD.coefficient` overrides to the
+  Python CLI.
 
 ### Fixed
-- `:TaskAdd` no longer raises `E565: Not allowed to change text or change
-  window` when nvim-cmp is installed. Both close and submit are deferred
-  via `vim.schedule` so they don't run inside cmp's textlocked keymap
-  solver.
-- `test_render_header_contains_filter` updated to match the header format
-  that has prefixed `status:pending` since the 1.1 render changes.
+- **`:TaskAdd` no longer raises `E565: Not allowed to change text or
+  change window`** when nvim-cmp is installed. Close and submit are
+  both deferred via `vim.schedule` so they don't run inside cmp's
+  textlocked keymap solver.
+- **"Invalid buffer id" errors after `:bwipeout`** on a task buffer.
+  `refresh_buf` guards against stale bufnrs at entry, and the User
+  `TaskNvimRefresh` autocmd body is wrapped in `pcall`.
+- **Triple backticks in a task description no longer paint every
+  following task line as code.** `syntax/taskmd.vim` clears
+  markdown's multi-line code-block regions after inheriting.
+- Smart j/k: screen-line movement that falls back to buffer-line
+  when the cursor is blocked by a concealed UUID comment; window
+  `wrap = true` prevents horizontal-scroll disorientation.
 
 ## [1.1.0] - 2026-04-13
 
