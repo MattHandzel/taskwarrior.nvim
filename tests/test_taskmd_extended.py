@@ -1957,7 +1957,10 @@ class TestRenderFormat:
 
     def test_render_header_contains_filter(self, tw_env, tmp_path):
         rendered = _render_to_string(["project:Test"])
-        assert "filter: project:Test" in rendered
+        # Renderer prefixes the filter with status:pending when no status is
+        # specified — the user-supplied portion still appears verbatim.
+        assert "project:Test" in rendered
+        assert "filter:" in rendered
 
     def test_render_header_contains_sort(self, tw_env, tmp_path):
         rendered = _render_to_string([])

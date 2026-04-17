@@ -97,8 +97,42 @@ def _run(args: list[str], check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(args, capture_output=True, text=True, check=check)
 
 
+def _normalize_tag_filters(args: list[str]) -> list[str]:
+    """Rewrite +tag → tags.has:tag and -tag → tags.hasnt:tag so TW3 doesn't
+    misparse tags with hyphens (e.g. +EXP-0011 → (Boolean +EXP) minus 0011)."""
+    import re
+    out = []
+    for arg in args:
+        m = re.fullmatch(r"\+([A-Za-z_][A-Za-z0-9_-]*)", arg)
+        if m:
+            out.append(f"tags.has:{m.group(1)}")
+            continue
+        m = re.fullmatch(r"-([A-Za-z_][A-Za-z0-9_-]*)", arg)
+        if m:
+            out.append(f"tags.hasnt:{m.group(1)}")
+            continue
+        out.append(arg)
+    return out
+
+
+def _normalize_duration_minutes(args: list[str]) -> list[str]:
+    """Rewrite `<lhs><op><N>m` → `<lhs><op><N>min` so TW doesn't interpret
+    `m` as months (its default for bare m). Operators handled: <, <=, >, >=,
+    =, and `.<word>:` suffixes (e.g. `.before:`, `.below:`)."""
+    import re
+    pattern = re.compile(r"^([\w]+)(<=?|>=?|=|\.[a-z]+:)(\d+\.?\d*)m$")
+    out = []
+    for arg in args:
+        m = pattern.match(arg)
+        if m:
+            out.append(f"{m.group(1)}{m.group(2)}{m.group(3)}min")
+        else:
+            out.append(arg)
+    return out
+
+
 def tw_export(filter_args: list[str]) -> list[dict]:
-    cmd = ["task"] + BASE_RC + ["rc.json.array=on"] + filter_args + ["export"]
+    cmd = ["task"] + BASE_RC + ["rc.json.array=on"] + _normalize_tag_filters(_normalize_duration_minutes(filter_args)) + ["export"]
     result = _run(cmd, check=False)
     if result.returncode not in (0, 1):
         raise RuntimeError(f"task export failed: {result.stderr.strip()}")
@@ -219,6 +253,34 @@ def _fields_to_args(fields: dict) -> list[str]:
 # Markdown parser / serializer
 # ---------------------------------------------------------------------------
 
+def _tokenize_line(s: str) -> list[str]:
+    """Tokenize a task-line body, treating `key:"value with spaces"` as one token."""
+    tokens: list[str] = []
+    i, n = 0, len(s)
+    while i < n:
+        while i < n and s[i].isspace():
+            i += 1
+        if i >= n:
+            break
+        start = i
+        in_quotes = False
+        while i < n:
+            c = s[i]
+            if in_quotes:
+                if c == '"':
+                    in_quotes = False
+                i += 1
+            elif c.isspace():
+                break
+            elif c == '"':
+                in_quotes = True
+                i += 1
+            else:
+                i += 1
+        tokens.append(s[start:i])
+    return tokens
+
+
 def parse_task_line(line: str, extra_fields: tuple[str, ...] = ()) -> dict | None:
     """Parse a markdown task line into a task dict. Returns None if not a task line."""
     line = line.lstrip()
@@ -240,8 +302,10 @@ def parse_task_line(line: str, extra_fields: tuple[str, ...] = ()) -> dict | Non
 
     all_fields = KNOWN_FIELDS + extra_fields
 
-    # Parse from right to left: extract tags and fields, leaving description
-    tokens = rest.split()
+    # Parse from right to left: extract tags and fields, leaving description.
+    # Tokenize such that `key:"value with spaces"` stays as one token so UDAs
+    # with multi-word values don't get split and mistaken for description.
+    tokens = _tokenize_line(rest)
     fields: dict[str, Any] = {}
     tags: list[str] = []
     desc_end = len(tokens)
@@ -253,7 +317,10 @@ def parse_task_line(line: str, extra_fields: tuple[str, ...] = ()) -> dict | Non
 
     for i in range(len(tokens) - 1, -1, -1):
         tok = tokens[i]
-        field_m = re.match(r"^(" + "|".join(all_fields) + r"):(\S+)$", tok)
+        # Try `key:"quoted value"` first, then `key:value`
+        field_m = re.match(r'^(' + "|".join(all_fields) + r'):"(.*)"$', tok)
+        if not field_m:
+            field_m = re.match(r"^(" + "|".join(all_fields) + r"):(\S+)$", tok)
         tag_m = re.match(r"^\+([\w-]+)$", tok)
         if field_m:
             fname, fval = field_m.group(1), field_m.group(2)
@@ -336,7 +403,12 @@ def serialize_task_line(
                 if not val:
                     continue
                 val = ",".join(v[:8] for v in sorted(val))
-            parts.append(f"{field}:{val}")
+            sval = str(val)
+            # Quote multi-word values so the parser doesn't misread them
+            # as description on round-trip.
+            if re.search(r"\s", sval):
+                sval = '"' + sval.replace('"', "") + '"'
+            parts.append(f"{field}:{sval}")
 
     for tag in sorted(task.get("tags", [])):
         if include("tags"):
@@ -356,10 +428,11 @@ def serialize_task_line(
 # ---------------------------------------------------------------------------
 
 def cmd_render(args: argparse.Namespace) -> None:
-    filter_args = args.filter or []
-    # Default to status:pending if no filter given
-    if not filter_args:
-        filter_args = ["status:pending"]
+    filter_args = list(args.filter or [])
+    # Default to pending unless the user explicitly filters by status.
+    # Keeps `effort.before:1h` etc. from returning completed tasks.
+    if not any(isinstance(a, str) and re.match(r"^status[:.]", a) for a in filter_args):
+        filter_args.insert(0, "status:pending")
     sort_spec = args.sort or "urgency-"
     group_field = args.group
     fields_filter = [f.strip() for f in args.fields.split(",")] if args.fields else None

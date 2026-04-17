@@ -17,19 +17,21 @@ Set Height 720
 Set Padding 40
 Set TypingSpeed 70ms
 
+Env TASKRC "/tmp/task-nvim-demo/.taskrc-demo"
+Env TASKDATA "/tmp/task-nvim-demo/.task-demo"
+
+# Seed the demo db AND open a code buffer — hidden so the GIF starts in code,
+# not on a shell prompt typing the launch command.
 Hide
-Type "bash demo/sources/seed-tasks.sh && clear"
+Type "mkdir -p /tmp/task-nvim-demo && export TASKRC=/tmp/task-nvim-demo/.taskrc-demo TASKDATA=/tmp/task-nvim-demo/.task-demo && bash demo/sources/seed-tasks.sh && clear"
 Enter
 Sleep 500ms
+Type "TASKRC=/tmp/task-nvim-demo/.taskrc-demo TASKDATA=/tmp/task-nvim-demo/.task-demo nvim -u demo/sources/demo-init.lua bin/taskmd"
+Enter
+Sleep 2500ms
 Show
 
 Sleep 2s
-
-# Start in a random code buffer — NOT a task buffer. This is the point.
-Type "nvim -u demo/sources/demo-init.lua bin/taskmd"
-Sleep 800ms
-Enter
-Sleep 2500ms
 
 # Navigate to a real function
 Type "gg"

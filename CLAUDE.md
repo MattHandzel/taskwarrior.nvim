@@ -14,6 +14,12 @@ Neovim plugin + Python CLI for editing Taskwarrior tasks as markdown.
 - The CLI must have zero external dependencies (stdlib only)
 - The Lua plugin should be under 300 lines total
 
+## Demo Assets
+- Render demos: `demo/render-all.sh` (validates tapes + renders + size-checks)
+- Validate tapes only: `demo/validate-tapes.sh`
+- Never run `vhs` directly — the render wrapper enforces env isolation to prevent leaking real task data
+- Pre-commit hook (`.githooks/pre-commit`) blocks commits with unsafe tapes or oversized assets
+
 ## Conventions
 - Python: type hints, argparse, no external deps
 - Lua: follow NvChad/lazy.nvim patterns

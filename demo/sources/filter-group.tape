@@ -17,18 +17,21 @@ Set Height 720
 Set Padding 40
 Set TypingSpeed 70ms
 
+Env TASKRC "/tmp/task-nvim-demo/.taskrc-demo"
+Env TASKDATA "/tmp/task-nvim-demo/.task-demo"
+
+# Seed the demo db AND launch nvim — hidden so the GIF starts on the rendered buffer.
 Hide
-Type "bash demo/sources/seed-tasks.sh && clear"
+Type "mkdir -p /tmp/task-nvim-demo && export TASKRC=/tmp/task-nvim-demo/.taskrc-demo TASKDATA=/tmp/task-nvim-demo/.task-demo && bash demo/sources/seed-tasks.sh && clear"
 Enter
 Sleep 500ms
+Type "TASKRC=/tmp/task-nvim-demo/.taskrc-demo TASKDATA=/tmp/task-nvim-demo/.task-demo nvim -u demo/sources/demo-init.lua"
+Enter
+Sleep 3s
 Show
 
 # Start on the all-tasks view
 Sleep 2s
-Type "nvim -u demo/sources/demo-init.lua"
-Sleep 600ms
-Enter
-Sleep 3s
 
 # Filter to a single project
 Type ":TaskFilter project:work.api"

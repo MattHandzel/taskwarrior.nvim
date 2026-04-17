@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Pre-commit hook for task.nvim. Validates demo tapes and checks asset sizes
+# whenever files under demo/ are staged.
+#
+# Install: git config core.hooksPath .githooks
+# (Already done by the repo setup; if not, run that command once.)
+set -euo pipefail
+
+REPO_DIR="$(git rev-parse --show-toplevel)"
+
+# Only run if demo/ files are being committed
+if ! git diff --cached --name-only | grep -q '^demo/'; then
+  exit 0
+fi
+
+echo "[pre-commit] demo/ files staged — running tape validation..."
+
+# Validate tape structure (env isolation, seed usage)
+if ! bash "$REPO_DIR/demo/validate-tapes.sh"; then
+  echo "[pre-commit] BLOCKED: Fix tape validation errors before committing."
+  exit 1
+fi
+
+# Size checks on staged assets
+echo "[pre-commit] Checking staged asset sizes..."
+
+declare -A MAX_SIZES=(
+  ["burndown.png"]=200
+  ["tree.png"]=800
+  ["summary.png"]=250
+  ["calendar.png"]=700
+  ["tags.png"]=150
+  ["hero.gif"]=7000
+  ["filter-group.gif"]=2000
+  ["quick-capture.gif"]=2500
+  ["review.gif"]=2000
+  ["delegate.gif"]=2000
+  ["diff-preview.gif"]=3000
+)
+
+errors=0
+while IFS= read -r file; do
+  [ -f "$file" ] || continue
+  name=$(basename "$file")
+  max="${MAX_SIZES[$name]:-0}"
+  [ "$max" -eq 0 ] && continue
+
+  size_kb=$(( $(stat -c%s "$file" 2>/dev/null || stat -f%z "$file" 2>/dev/null) / 1024 ))
+  if [ "$size_kb" -gt "$max" ]; then
+    echo "[pre-commit] WARN: $name is ${size_kb}KB (max ${max}KB) — possible data leak!"
+    ((errors++)) || true
+  fi
+done < <(git diff --cached --name-only | grep '^demo/assets/' | sed "s|^|$REPO_DIR/|")
+
+if [ "$errors" -gt 0 ]; then
+  echo "[pre-commit] BLOCKED: $errors asset(s) exceed size limits."
+  echo "[pre-commit] If this is expected, update MAX_SIZES in .githooks/pre-commit and demo/render-all.sh."
+  exit 1
+fi
+
+echo "[pre-commit] All demo checks passed."

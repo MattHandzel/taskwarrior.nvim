@@ -26,6 +26,7 @@ COMMANDS
   :TaskLoad [name]        Load a saved view (tab-completes names)
   :TaskReview             Walk through pending tasks one by one
   :TaskDiffPreview [on|off]  Toggle live virtual-text diff preview
+  :TaskFeedback              Send structured feedback (bug report / feature request)
 
 GLOBAL KEYBINDINGS (always available)
   <leader>tt   Open task buffer (auto-filters by project if cwd is registered)
@@ -269,6 +270,8 @@ local function render(filter, sort, group)
         sort = sort or config.options.sort or "urgency-",
         group = (group ~= "" and group) or nil,
         fields = config.options.fields,
+        urgency_coefficients = config.options.urgency_coefficients,
+        urgency_value_mappers = config.options.urgency_value_mappers,
       })
       if ok_r and type(result) == "string" then
         return result
@@ -291,11 +294,6 @@ local function render(filter, sort, group)
   end
   if config.options.fields then
     table.insert(cmd, "--fields=" .. config.options.fields)
-  end
-
-  -- Pass urgency coefficients as rc overrides so TW uses them for sorting
-  for field, coeff in pairs(config.options.urgency_coefficients or {}) do
-    table.insert(cmd, string.format("rc.urgency.uda.%s.coefficient=%s", field, tostring(coeff)))
   end
 
   local out, ok = run(table.concat(cmd, " "))
@@ -392,6 +390,7 @@ local function apply_custom_sort(bufnr)
 end
 
 local function refresh_buf(bufnr)
+  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then return end
   local filter = vim.b[bufnr].task_filter or ""
   local sort   = vim.b[bufnr].task_sort
   local group  = vim.b[bufnr].task_group
@@ -437,6 +436,24 @@ apply_virtual_text = function(bufnr)
   if not parsed_ok or type(tasks) ~= "table" then return end
 
   local config = require("task.config")
+
+  -- Apply multiplicative urgency coefficients (same logic as taskmd.lua render).
+  -- Non-numeric values go through user-configurable mappers.
+  local coeffs = config.options.urgency_coefficients
+  if coeffs and next(coeffs) then
+    local tm_ok, tm = pcall(require, "task.taskmd")
+    local user_mappers = config.options.urgency_value_mappers
+    for _, t in ipairs(tasks) do
+      local adj = 0
+      for field, coeff in pairs(coeffs) do
+        local mapper = tm_ok and tm.resolve_value_mapper(field, user_mappers) or tonumber
+        local val = mapper(t[field])
+        if type(val) == "number" then adj = adj + val * coeff end
+      end
+      if adj ~= 0 then t.urgency = (t.urgency or 0) + adj end
+    end
+  end
+
   local meta = {}
   for _, t in ipairs(tasks) do
     if t.uuid then
@@ -659,6 +676,25 @@ end
 local function setup_buf_keymaps(bufnr)
   local opts = { buffer = bufnr, noremap = true, silent = true }
 
+  -- Smart j/k: do screen-line movement (gj/gk) for wrapped-line navigation,
+  -- but if the cursor gets stuck on a phantom screen line created by the
+  -- concealed UUID comment at the end of task lines, fall back to buffer-line
+  -- movement. With a count (e.g. 5j), always use buffer-line movement.
+  for _, key in ipairs({ "j", "k" }) do
+    vim.keymap.set("n", key, function()
+      if vim.v.count > 0 then
+        vim.cmd("normal! " .. vim.v.count .. key)
+        return
+      end
+      local before = vim.api.nvim_win_get_cursor(0)
+      vim.cmd("normal! g" .. key)
+      local after = vim.api.nvim_win_get_cursor(0)
+      if after[1] == before[1] and after[2] == before[2] then
+        vim.cmd("normal! " .. key)
+      end
+    end, opts)
+  end
+
   -- Cycle task state: [ ] → [>] → [x] → [ ]
   vim.keymap.set("n", "<CR>", function()
     local line = vim.api.nvim_get_current_line()
@@ -842,6 +878,10 @@ local function setup_buf_autocmds(bufnr)
     callback = function()
       vim.wo[0].conceallevel = 3
       vim.wo[0].concealcursor = "nvic"
+      -- Wrap prevents horizontal-scroll disorientation on j/k with long task
+      -- lines. Without wrap, curswant preservation causes the viewport to
+      -- shift horizontally, making it look like j "doesn't work".
+      vim.wo[0].wrap = true
     end,
   })
 
@@ -864,12 +904,22 @@ local function setup_buf_autocmds(bufnr)
     end,
   })
 
-  -- Update header cache when buffer is refreshed (filter/sort/group changes)
+  -- Update header cache when buffer is refreshed (filter/sort/group changes).
+  -- User events don't carry buffer context, so this autocmd fires for every
+  -- task buffer's TaskNvimRefresh — guard against stale closures over wiped
+  -- buffers, and self-clean the augroup if the buffer is gone.
   vim.api.nvim_create_autocmd("User", {
     pattern = "TaskNvimRefresh",
     group = group,
     callback = function()
-      header_cache = vim.api.nvim_buf_get_lines(bufnr, 0, 1, false)[1] or ""
+      if not vim.api.nvim_buf_is_valid(bufnr) then
+        pcall(vim.api.nvim_del_augroup_by_id, group)
+        return
+      end
+      pcall(function()
+        vim.b[bufnr].taskmd_header_cache =
+          vim.api.nvim_buf_get_lines(bufnr, 0, 1, false)[1] or ""
+      end)
     end,
   })
 
@@ -907,6 +957,39 @@ end
 -- ---------------------------------------------------------------------------
 -- Write handler
 -- ---------------------------------------------------------------------------
+
+-- Backup the Taskwarrior data directory before applying changes. Best-effort:
+-- failures are reported but do not block the apply.
+local function backup_taskdata()
+  local config = require("task.config")
+  if not config.options.auto_backup then return end
+  local ok, taskdata_raw = pcall(vim.fn.system, "task _get rc.data.location 2>/dev/null")
+  if not ok then return end
+  local taskdata = tostring(taskdata_raw or ""):gsub("%s+$", "")
+  if taskdata == "" or vim.fn.isdirectory(taskdata) ~= 1 then return end
+  local dest_root = vim.fn.stdpath("data") .. "/task.nvim/backups"
+  vim.fn.mkdir(dest_root, "p")
+  local stamp = os.date("%Y-%m-%d-%H%M%S")
+  local dest = dest_root .. "/" .. stamp
+  local copy_ok, copy_err = pcall(function()
+    vim.fn.system(string.format("cp -a %s %s",
+      vim.fn.shellescape(taskdata), vim.fn.shellescape(dest)))
+  end)
+  if not copy_ok then
+    vim.notify("task.nvim: auto-backup failed (" .. tostring(copy_err) .. ")",
+      vim.log.levels.WARN)
+    return
+  end
+  -- Prune: keep the N most recent.
+  local keep = tonumber(config.options.auto_backup_keep) or 10
+  if keep < 1 then keep = 1 end
+  local entries = vim.fn.glob(dest_root .. "/*", true, true)
+  table.sort(entries)
+  while #entries > keep do
+    local oldest = table.remove(entries, 1)
+    pcall(vim.fn.delete, oldest, "rf")
+  end
+end
 
 -- Apply helper: runs Lua backend if configured, else shells to bin/taskmd.
 -- Returns (result_table, error_string_or_nil).
@@ -986,6 +1069,12 @@ function M._on_write(bufnr)
         table.insert(labels, string.format("v Done: %q", desc))
       elseif action.type == "delete" then
         table.insert(labels, string.format("x Delete: %q", desc))
+      elseif action.type == "start" then
+        table.insert(labels, string.format("> Start: %q", desc))
+      elseif action.type == "stop" then
+        table.insert(labels, string.format("o Stop: %q", desc))
+      else
+        table.insert(labels, string.format("? %s: %q", action.type, desc))
       end
     end
 
@@ -1006,6 +1095,7 @@ function M._on_write(bufnr)
 end
 
 function M._do_apply(bufnr, tmpfile, on_delete)
+  backup_taskdata()
   local summary, err = do_apply({
     tmpfile = tmpfile,
     on_delete = on_delete,
@@ -1531,14 +1621,19 @@ function M.delegate_open_popup(opts)
     "",
     "---",
   }
+  -- TW descriptions may contain literal newlines (esp. multi-paragraph notes).
+  -- nvim_buf_set_lines rejects strings with \n, so flatten before inserting.
+  local function flatten(s)
+    return tostring(s or ""):gsub("[\r\n]+", " "):gsub("%z", "")
+  end
   if #infos == 1 then
-    table.insert(initial_lines, string.format("Task: %s", infos[1].task.description or "unknown"))
-    table.insert(initial_lines, string.format("UUID: %s", infos[1].task.uuid or infos[1].short_uuid))
+    table.insert(initial_lines, string.format("Task: %s", flatten(infos[1].task.description or "unknown")))
+    table.insert(initial_lines, string.format("UUID: %s", flatten(infos[1].task.uuid or infos[1].short_uuid)))
   else
     table.insert(initial_lines, string.format("Delegating %d tasks:", #infos))
     for _, info in ipairs(infos) do
       table.insert(initial_lines, string.format("  [%s] %s",
-        info.short_uuid, (info.task.description or ""):sub(1, 60)))
+        info.short_uuid, flatten(info.task.description or ""):sub(1, 60)))
     end
   end
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, initial_lines)
@@ -1823,21 +1918,40 @@ function M.help()
   end
 end
 
+-- Omnifunc for the capture window — reuses the existing complete_filter logic
+-- so users get project:, +tag, priority:, field: completions with <Tab>.
+function M._capture_omnifunc(findstart, base)
+  if findstart == 1 then
+    local line = vim.api.nvim_get_current_line()
+    local col = vim.api.nvim_win_get_cursor(0)[2]
+    local start = col
+    while start > 0 and line:sub(start, start) ~= " " do
+      start = start - 1
+    end
+    return start
+  end
+  return complete_filter(base)
+end
+
 function M.capture()
   ensure_setup()
+  local config = require("task.config")
   local buf = vim.api.nvim_create_buf(false, true)
   vim.bo[buf].buftype = "nofile"
   vim.bo[buf].filetype = "taskmd"
+  vim.bo[buf].omnifunc = "v:lua.require'task'._capture_omnifunc"
 
-  local width = math.min(80, math.floor(vim.o.columns * 0.6))
+  local width = config.options.capture_width
+      or math.min(80, math.floor(vim.o.columns * 0.6))
+  local height = config.options.capture_height or 3
   local win = vim.api.nvim_open_win(buf, true, {
     relative = "editor",
     width = width,
-    height = 1,
+    height = height,
     col = math.floor((vim.o.columns - width) / 2),
     row = math.floor(vim.o.lines / 2) - 1,
     style = "minimal",
-    border = "rounded",
+    border = config.options.border_style or "rounded",
     title = " Task Add ",
     title_pos = "center",
   })
@@ -1845,33 +1959,83 @@ function M.capture()
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "" })
   vim.cmd("startinsert")
 
+  -- Close is always deferred via vim.schedule: cmp's keymap solver (and other
+  -- expr-mapping wrappers) can invoke our callbacks from inside a textlock
+  -- context where nvim_win_close raises E565. Scheduling moves the close to
+  -- the next main loop tick where textlock is released.
   local function close()
-    if vim.api.nvim_win_is_valid(win) then
-      vim.api.nvim_win_close(win, true)
-    end
-    vim.cmd("stopinsert")
+    vim.schedule(function()
+      if vim.api.nvim_win_is_valid(win) then
+        pcall(vim.api.nvim_win_close, win, true)
+      end
+      if vim.fn.mode():sub(1, 1) == "i" then
+        vim.cmd("stopinsert")
+      end
+    end)
   end
 
-  vim.keymap.set("i", "<CR>", function()
-    local line = vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1]
-    close()
-    if line and line ~= "" then
-      -- Write to temp file and use taskmd apply to avoid shell escaping issues
-      -- with special characters (dashes, parens, plus signs, etc.)
-      local escaped = line:gsub("'", "'\\''")
-      local _, ok = run("task rc.bulk=0 rc.confirmation=off add -- '" .. escaped .. "'")
-      if ok then
-        vim.notify("task.nvim: added task")
-        for _, b in ipairs(vim.api.nvim_list_bufs()) do
-          if vim.b[b].task_filter ~= nil and vim.api.nvim_buf_is_valid(b) then
-            refresh_buf(b)
+  local function submit(line)
+    if not line or line == "" then return end
+
+    -- Greedy-parse the line so utility:20, project:X, +tag, due:tom etc.
+    -- become real fields even when they appear in the middle of free-form
+    -- text (e.g. between a sentence and a trailing code block).
+    local ok_m, tm = pcall(require, "task.taskmd")
+    if ok_m then
+      local udas = {}
+      local ok_u, list = pcall(tm.tw_udas)
+      if ok_u and type(list) == "table" then udas = list end
+      local desc, fields = tm.parse_capture(line, udas)
+      if desc and desc ~= "" then
+        local new_uuid = tm.tw_add(desc, fields)
+        if new_uuid and new_uuid ~= "" then
+          vim.notify("task.nvim: added task")
+          for _, b in ipairs(vim.api.nvim_list_bufs()) do
+            if vim.b[b].task_filter ~= nil and vim.api.nvim_buf_is_valid(b) then
+              refresh_buf(b)
+            end
           end
+          return
         end
-      else
-        vim.notify("task.nvim: add failed", vim.log.levels.ERROR)
       end
     end
-  end, { buffer = buf })
+
+    -- Fallback: raw add as literal description
+    local escaped = line:gsub("'", "'\\''")
+    local _, ok = run("task rc.bulk=0 rc.confirmation=off add -- '" .. escaped .. "'")
+    if ok then
+      vim.notify("task.nvim: added task (unparsed)")
+      for _, b in ipairs(vim.api.nvim_list_bufs()) do
+        if vim.b[b].task_filter ~= nil and vim.api.nvim_buf_is_valid(b) then
+          refresh_buf(b)
+        end
+      end
+    else
+      vim.notify("task.nvim: add failed", vim.log.levels.ERROR)
+    end
+  end
+
+  -- <Tab>/<S-Tab> drive the completion popup
+  vim.keymap.set("i", "<Tab>", function()
+    return vim.fn.pumvisible() == 1 and "<C-n>" or "<C-x><C-o>"
+  end, { buffer = buf, expr = true })
+  vim.keymap.set("i", "<S-Tab>", function()
+    return vim.fn.pumvisible() == 1 and "<C-p>" or "<S-Tab>"
+  end, { buffer = buf, expr = true })
+
+  vim.keymap.set("i", "<CR>", function()
+    -- If the popup is visible, accept the selection instead of submitting
+    if vim.fn.pumvisible() == 1 then
+      return "<C-y>"
+    end
+    local line = vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1] or ""
+    -- Defer close + submit to escape any active textlock (nvim-cmp, etc.).
+    vim.schedule(function()
+      close()
+      submit(line)
+    end)
+    return ""
+  end, { buffer = buf, expr = true })
 
   vim.keymap.set("i", "<Esc>", close, { buffer = buf })
   vim.keymap.set("n", "<Esc>", close, { buffer = buf })
@@ -2042,6 +2206,10 @@ function M._setup_commands()
   vim.api.nvim_create_user_command("TaskTags", function()
     views.tags()
   end, { nargs = 0, desc = "Show tag distribution" })
+
+  vim.api.nvim_create_user_command("TaskFeedback", function()
+    require("task.feedback").open()
+  end, { desc = "Send structured feedback about task.nvim" })
 end
 
 -- ---------------------------------------------------------------------------

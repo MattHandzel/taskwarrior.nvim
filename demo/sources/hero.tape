@@ -18,23 +18,22 @@ Set Padding 40
 Set TypingSpeed 70ms
 Set PlaybackSpeed 1.0
 
-# Seed the demo taskwarrior db (silent)
+Env TASKRC "/tmp/task-nvim-demo/.taskrc-demo"
+Env TASKDATA "/tmp/task-nvim-demo/.task-demo"
+
+# Seed the demo taskwarrior db AND launch nvim — hidden so the GIF starts
+# directly on the rendered task buffer (no boilerplate typing).
 Hide
-Type "bash demo/sources/seed-tasks.sh && clear"
+Type "mkdir -p /tmp/task-nvim-demo && export TASKRC=/tmp/task-nvim-demo/.taskrc-demo TASKDATA=/tmp/task-nvim-demo/.task-demo && bash demo/sources/seed-tasks.sh && clear"
 Enter
 Sleep 500ms
+Type "TASKRC=/tmp/task-nvim-demo/.taskrc-demo TASKDATA=/tmp/task-nvim-demo/.task-demo nvim -u demo/sources/demo-init.lua"
+Enter
+Sleep 3s
 Show
 
-# Entry pause — viewer reads the empty prompt
+# Entry pause — viewer reads the rendered buffer
 Sleep 2s
-
-# The aha moment: open the task buffer
-Type "nvim -u demo/sources/demo-init.lua"
-Sleep 800ms
-Enter
-
-# Let task.nvim render + paint highlights
-Sleep 3s
 
 # Scan the list — vim motion
 Type "G"
