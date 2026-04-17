@@ -175,9 +175,10 @@ describe("task.config", function()
   -- ── unknown / extra keys ─────────────────────────────────────────────────
 
   describe("extra/unknown keys", function()
-    it("preserves unknown keys in M.options", function()
-      config.setup({ my_custom_option = "hello" })
-      assert.equals("hello", config.options.my_custom_option)
+    it("rejects unknown keys with a clear error", function()
+      local ok, err = pcall(config.setup, { my_custom_option = "hello" })
+      assert.is_false(ok)
+      assert.matches("unknown setup key 'my_custom_option'", err)
     end)
   end)
 
