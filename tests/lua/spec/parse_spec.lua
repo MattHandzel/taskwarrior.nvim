@@ -14,7 +14,7 @@
 --   • depends (LIST_FIELDS)
 --   • Date normalisation (human → TW wire format)
 
-local M = require("task.taskmd")
+local M = require("taskwarrior.taskmd")
 
 describe("parse_task_line", function()
 

@@ -1,10 +1,10 @@
--- Live diff preview for task.nvim. Attaches virtual text to each task line
+-- Live diff preview for taskwarrior.nvim. Attaches virtual text to each task line
 -- showing the pending taskwarrior action (add/modify/done/delete) so the
 -- user sees what `:w` will do before they save.
 
 local M = {}
 
-local ns = vim.api.nvim_create_namespace("task_nvim_diff_preview")
+local ns = vim.api.nvim_create_namespace("taskwarrior_diff_preview")
 local _enabled = {}    -- { [bufnr] = true }
 local _debounce = {}   -- { [bufnr] = timer }
 
@@ -74,7 +74,7 @@ end
 local function run_dry_run(bufnr, cb)
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   local content = table.concat(lines, "\n")
-  local ok_m, taskmd = pcall(require, "task.taskmd")
+  local ok_m, taskmd = pcall(require, "taskwarrior.taskmd")
   if not ok_m then cb({}); return end
   local ok_a, result = pcall(taskmd.apply, { content = content, dry_run = true })
   if not ok_a or type(result) ~= "table" then cb({}); return end
@@ -113,7 +113,7 @@ function M.enable(bufnr)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
   if _enabled[bufnr] then return end
   _enabled[bufnr] = true
-  local grp = vim.api.nvim_create_augroup("TaskNvimDiffPreview_" .. bufnr, { clear = true })
+  local grp = vim.api.nvim_create_augroup("TaskwarriorDiffPreview_" .. bufnr, { clear = true })
   vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI", "BufWritePost" }, {
     buffer = bufnr,
     group = grp,
@@ -134,7 +134,7 @@ function M.disable(bufnr)
   if vim.api.nvim_buf_is_valid(bufnr) then
     vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
   end
-  pcall(vim.api.nvim_del_augroup_by_name, "TaskNvimDiffPreview_" .. bufnr)
+  pcall(vim.api.nvim_del_augroup_by_name, "TaskwarriorDiffPreview_" .. bufnr)
 end
 
 function M.toggle(bufnr)

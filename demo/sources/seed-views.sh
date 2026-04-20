@@ -59,7 +59,7 @@ add "Update threat model doc" project:work.security priority:M +security +docs
 add "Implement SAML SSO" project:work.security priority:M "due:$(days_hence 14)" +blocker
 
 # writing (4 tasks)
-add "Draft launch blog post for task.nvim" project:writing priority:M due:monday +launch
+add "Draft launch blog post for taskwarrior.nvim" project:writing priority:M due:monday +launch
 add "Outline talk: editing taskwarrior like oil.nvim" project:writing priority:L
 add "Reply to comments on previous post" project:writing priority:L
 add "Pitch guest article to LWN" project:writing priority:L +outreach

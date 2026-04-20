@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pre-commit hook for task.nvim. Validates demo tapes and checks asset sizes
+# Pre-commit hook for taskwarrior.nvim. Validates demo tapes and checks asset sizes
 # whenever files under demo/ are staged.
 #
 # Install: git config core.hooksPath .githooks

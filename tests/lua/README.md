@@ -1,8 +1,8 @@
-# Lua Test Suite for task.nvim
+# Lua Test Suite for taskwarrior.nvim
 
 This directory contains a [plenary.nvim](https://github.com/nvim-lua/plenary.nvim)-based
-test harness for the pure-Lua backend (`lua/task/taskmd.lua`) and configuration
-module (`lua/task/config.lua`).
+test harness for the pure-Lua backend (`lua/taskwarrior/taskmd.lua`) and configuration
+module (`lua/taskwarrior/config.lua`).
 
 ## Prerequisites
 

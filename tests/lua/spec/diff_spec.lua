@@ -25,7 +25,7 @@
 --   • Mixed scenario (add + complete + modify)
 --   • start/stop transitions
 
-local M = require("task.taskmd")
+local M = require("taskwarrior.taskmd")
 
 local function make_uuid(prefix)
   -- Pad a short 8-char prefix into a full UUID

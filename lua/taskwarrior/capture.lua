@@ -18,7 +18,7 @@ function M.omnifunc(findstart, base)
     end
     return start
   end
-  local ok, completion = pcall(require, "task.completion")
+  local ok, completion = pcall(require, "taskwarrior.completion")
   if not ok then return {} end
   return completion.complete_filter(base)
 end
@@ -26,11 +26,11 @@ end
 -- open: open the quick-capture floating window.
 -- refresh_fn: callback() to refresh all task buffers after add.
 function M.open(refresh_fn)
-  local config = require("task.config")
+  local config = require("taskwarrior.config")
   local buf = vim.api.nvim_create_buf(false, true)
   vim.bo[buf].buftype = "nofile"
   vim.bo[buf].filetype = "taskmd"
-  vim.bo[buf].omnifunc = "v:lua.require'task'._capture_omnifunc"
+  vim.bo[buf].omnifunc = "v:lua.require'taskwarrior'._capture_omnifunc"
 
   local width = config.options.capture_width
       or math.min(80, math.floor(vim.o.columns * 0.6))
@@ -71,7 +71,7 @@ function M.open(refresh_fn)
     -- Greedy-parse the line so utility:20, project:X, +tag, due:tom etc.
     -- become real fields even when they appear in the middle of free-form
     -- text (e.g. between a sentence and a trailing code block).
-    local ok_m, tm = pcall(require, "task.taskmd")
+    local ok_m, tm = pcall(require, "taskwarrior.taskmd")
     if ok_m then
       local udas = {}
       local ok_u, list = pcall(tm.tw_udas)
@@ -80,7 +80,7 @@ function M.open(refresh_fn)
       if desc and desc ~= "" then
         local new_uuid = tm.tw_add(desc, fields)
         if new_uuid and new_uuid ~= "" then
-          vim.notify("task.nvim: added task")
+          vim.notify("taskwarrior.nvim: added task")
           refresh_fn()
           return
         end
@@ -91,10 +91,10 @@ function M.open(refresh_fn)
     local escaped = line:gsub("'", "'\\''")
     local _, ok = run("task rc.bulk=0 rc.confirmation=off add -- '" .. escaped .. "'")
     if ok then
-      vim.notify("task.nvim: added task (unparsed)")
+      vim.notify("taskwarrior.nvim: added task (unparsed)")
       refresh_fn()
     else
-      vim.notify("task.nvim: add failed", vim.log.levels.ERROR)
+      vim.notify("taskwarrior.nvim: add failed", vim.log.levels.ERROR)
     end
   end
 

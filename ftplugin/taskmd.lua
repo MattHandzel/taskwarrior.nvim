@@ -1,4 +1,4 @@
--- Filetype plugin for the task.nvim markdown rendering.
+-- Filetype plugin for the taskwarrior.nvim markdown rendering.
 -- Idempotent: harmless if loaded multiple times or from a non-task buffer.
 
 vim.bo.commentstring = "<!-- %s -->"

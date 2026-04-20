@@ -13,7 +13,7 @@
 --   • nil/non-string description handled safely
 --   • Newlines in description are collapsed to spaces
 
-local M = require("task.taskmd")
+local M = require("taskwarrior.taskmd")
 
 describe("serialize_task_line", function()
 

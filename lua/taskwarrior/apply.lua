@@ -1,7 +1,7 @@
 local M = {}
 
 local function get_taskmd_path()
-  local config = require("task.config")
+  local config = require("taskwarrior.config")
   if config.options.taskmd_path then
     return config.options.taskmd_path
   end
@@ -19,13 +19,20 @@ end
 -- Backup the Taskwarrior data directory before applying changes. Best-effort:
 -- failures are reported but do not block the apply.
 local function backup_taskdata()
-  local config = require("task.config")
+  local config = require("taskwarrior.config")
   if not config.options.auto_backup then return end
   local ok, taskdata_raw = pcall(vim.fn.system, "task _get rc.data.location 2>/dev/null")
   if not ok then return end
   local taskdata = tostring(taskdata_raw or ""):gsub("%s+$", "")
   if taskdata == "" or vim.fn.isdirectory(taskdata) ~= 1 then return end
-  local dest_root = vim.fn.stdpath("data") .. "/task.nvim/backups"
+  local data = vim.fn.stdpath("data")
+  local dest_root = data .. "/taskwarrior.nvim/backups"
+  -- Migrate from pre-rename data dir (task.nvim → taskwarrior.nvim, v1.3.0).
+  local old_root = data .. "/task.nvim/backups"
+  if vim.fn.isdirectory(old_root) == 1 and vim.fn.isdirectory(dest_root) == 0 then
+    vim.fn.mkdir(data .. "/taskwarrior.nvim", "p")
+    pcall(vim.loop.fs_rename, old_root, dest_root)
+  end
   vim.fn.mkdir(dest_root, "p")
   local stamp = os.date("%Y-%m-%d-%H%M%S")
   local dest = dest_root .. "/" .. stamp
@@ -34,7 +41,7 @@ local function backup_taskdata()
       vim.fn.shellescape(taskdata), vim.fn.shellescape(dest)))
   end)
   if not copy_ok then
-    vim.notify("task.nvim: auto-backup failed (" .. tostring(copy_err) .. ")",
+    vim.notify("taskwarrior.nvim: auto-backup failed (" .. tostring(copy_err) .. ")",
       vim.log.levels.WARN)
     return
   end
@@ -53,9 +60,9 @@ end
 -- Returns (result_table, error_string_or_nil).
 local function do_apply(opts)
   -- opts: { content=str, tmpfile=str, dry_run=bool, on_delete=str, force=bool }
-  local config = require("task.config")
+  local config = require("taskwarrior.config")
   if config.options.backend ~= "python" then
-    local ok_m, tm = pcall(require, "task.taskmd")
+    local ok_m, tm = pcall(require, "taskwarrior.taskmd")
     if ok_m then
       local ok_a, result = pcall(tm.apply, {
         content = opts.content,
@@ -65,7 +72,7 @@ local function do_apply(opts)
         force = opts.force,
       })
       if ok_a and type(result) == "table" then return result, nil end
-      vim.notify("task.nvim: Lua backend apply failed (" .. tostring(result) .. "); falling back to Python",
+      vim.notify("taskwarrior.nvim: Lua backend apply failed (" .. tostring(result) .. "); falling back to Python",
         vim.log.levels.WARN)
     end
   end
@@ -87,7 +94,7 @@ end
 -- refresh_fn: callback(bufnr) to re-render (avoids circular require with init)
 -- do_apply_fn: callback(bufnr, tmpfile, on_delete) — used for the confirm path
 function M.on_write(bufnr, refresh_fn, do_apply_fn)
-  local config = require("task.config")
+  local config = require("taskwarrior.config")
 
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   local tmpfile = vim.fn.tempname()
@@ -102,14 +109,14 @@ function M.on_write(bufnr, refresh_fn, do_apply_fn)
       on_delete = on_delete,
     })
     if not decoded then
-      vim.notify("task.nvim: dry-run failed\n" .. (err or ""), vim.log.levels.ERROR)
+      vim.notify("taskwarrior.nvim: dry-run failed\n" .. (err or ""), vim.log.levels.ERROR)
       vim.fn.delete(tmpfile)
       return
     end
 
     local actions = decoded.actions or {}
     if #actions == 0 then
-      vim.notify("task.nvim: no changes")
+      vim.notify("taskwarrior.nvim: no changes")
       vim.bo[bufnr].modified = false
       vim.fn.delete(tmpfile)
       return
@@ -144,7 +151,7 @@ function M.on_write(bufnr, refresh_fn, do_apply_fn)
       prompt = string.format("Apply %d change(s)?\n%s", #actions, preview),
     }, function(choice)
       if choice ~= "Apply" then
-        vim.notify("task.nvim: cancelled")
+        vim.notify("taskwarrior.nvim: cancelled")
         vim.fn.delete(tmpfile)
         return
       end
@@ -160,7 +167,7 @@ end
 function M.undo(bufnr, refresh_fn)
   local count = vim.b[bufnr].task_last_action_count
   if not count or count == 0 then
-    vim.notify("task.nvim: nothing to undo")
+    vim.notify("taskwarrior.nvim: nothing to undo")
     return
   end
   vim.ui.select({ "Undo", "Cancel" }, {
@@ -174,9 +181,9 @@ function M.undo(bufnr, refresh_fn)
     end
     vim.b[bufnr].task_last_action_count = nil
     if failed > 0 then
-      vim.notify(string.format("task.nvim: undo completed (%d failed)", failed), vim.log.levels.WARN)
+      vim.notify(string.format("taskwarrior.nvim: undo completed (%d failed)", failed), vim.log.levels.WARN)
     else
-      vim.notify(string.format("task.nvim: undid %d action(s)", count))
+      vim.notify(string.format("taskwarrior.nvim: undid %d action(s)", count))
     end
     refresh_fn(bufnr)
   end)
@@ -192,7 +199,7 @@ function M.do_apply_and_refresh(bufnr, tmpfile, on_delete, refresh_fn)
   })
   vim.fn.delete(tmpfile)
   if not summary then
-    vim.notify("task.nvim: apply failed\n" .. (err or ""), vim.log.levels.ERROR)
+    vim.notify("taskwarrior.nvim: apply failed\n" .. (err or ""), vim.log.levels.ERROR)
     return
   end
   vim.b[bufnr].task_last_action_count = summary.action_count or 0

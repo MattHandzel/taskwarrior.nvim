@@ -1,6 +1,8 @@
-# task.nvim
+# taskwarrior.nvim
 
-> **Status: Beta.** task.nvim is usable day-to-day but the API, defaults, and on-disk metadata format may still change before 1.0. Always back up your Taskwarrior data (`cp -r ~/.task ~/.task.bak`) before bulk operations, and review the confirmation dialog before saving — `:w` issues real `task modify` / `task done` / `task delete` commands. Bug reports and PRs welcome.
+> **Status: Beta.** Usable day-to-day, but APIs and defaults may still change before 1.0. Always keep an external backup of your Taskwarrior data (`cp -r ~/.task ~/.task.bak`); review the confirmation dialog before saving — `:w` issues real `task modify` / `task done` / `task delete` commands. Bug reports and PRs welcome.
+
+> **Migrating from `task.nvim`?** This plugin was renamed in v1.3.0. Update your lazy.nvim spec from `matthandzel/task.nvim` to `matthandzel/taskwarrior.nvim` and replace `require("task")` with `require("taskwarrior")` in your config. The `:Task*` commands and the `taskmd` filetype are unchanged. Saved views, registered projects, and apply backups migrate automatically the first time the plugin loads.
 
 Edit your Taskwarrior tasks as markdown. Every vim motion, macro, and visual-mode operation becomes a task management operation for free. Inspired by [oil.nvim](https://github.com/stevearc/oil.nvim).
 
@@ -92,7 +94,7 @@ Mark the task on the cursor as actively in-progress (`task UUID start`) or pause
 
 ### `:TaskSave` / `:TaskLoad` — saved views
 
-`:TaskSave morning` saves the current filter+sort+group as a named view. `:TaskLoad morning` reopens it. Persisted to `stdpath("data")/task.nvim/saved-views.json`. Tab-completes saved names.
+`:TaskSave morning` saves the current filter+sort+group as a named view. `:TaskLoad morning` reopens it. Persisted to `stdpath("data")/taskwarrior.nvim/saved-views.json`. Tab-completes saved names.
 
 ### `:TaskUndo`
 
@@ -109,7 +111,7 @@ Register the directories you work in:
 :TaskProjectRemove          -- unmap cwd
 ```
 
-After that, `:Task` (with no filter) auto-applies `project:<name>` whenever you launch it from inside a registered directory. Persisted to `stdpath("data")/task_nvim_projects.json`.
+After that, `:Task` (with no filter) auto-applies `project:<name>` whenever you launch it from inside a registered directory. Persisted to `stdpath("data")/taskwarrior_nvim_projects.json`.
 
 ---
 
@@ -120,8 +122,8 @@ These are bundled but require their own host plugins to be installed.
 | Module | Path | Activate |
 |---|---|---|
 | Telescope picker | `lua/telescope/_extensions/task.lua` | `require("telescope").load_extension("task")` then `:Telescope task tasks` |
-| nvim-cmp source | `lua/task/cmp.lua` | `require("cmp").register_source("task", require("task.cmp").new())` then add `{ name = "task" }` to your cmp sources |
-| Statusline component | `lua/task/statusline.lua` | `require("task.statusline").render()` — returns a string with the active task / overdue count / next due |
+| nvim-cmp source | `lua/taskwarrior/cmp.lua` | `require("cmp").register_source("task", require("taskwarrior.cmp").new())` then add `{ name = "task" }` to your cmp sources |
+| Statusline component | `lua/taskwarrior/statusline.lua` | `require("taskwarrior.statusline").render()` — returns a string with the active task / overdue count / next due |
 
 Screenshots for these are coming once a richer demo init that loads telescope/cmp/lualine lands.
 
@@ -138,9 +140,9 @@ Screenshots for these are coming once a richer demo init that loads telescope/cm
 ```lua
 -- lazy.nvim
 {
-  "matthandzel/task.nvim",
+  "matthandzel/taskwarrior.nvim",
   config = function()
-    require("task").setup()
+    require("taskwarrior").setup()
   end,
 }
 ```
@@ -216,7 +218,7 @@ Tasks use Taskwarrior-native syntax after the description:
 ## Configuration
 
 ```lua
-require("task").setup({
+require("taskwarrior").setup({
   on_delete = "done",          -- "done" or "delete" when lines are removed
   confirm = true,              -- show confirmation dialog before applying
   sort = "urgency-",           -- default sort (field+ for asc, field- for desc)
@@ -234,7 +236,7 @@ require("task").setup({
   border_style = "rounded",    -- "rounded" | "single" | "double" | "none"
   capture_width = nil,         -- quick-capture width (nil = auto)
   capture_height = 3,          -- quick-capture height in lines
-  auto_backup = true,          -- copy ~/.task to stdpath("data")/task.nvim/backups/ before apply
+  auto_backup = true,          -- copy ~/.task to stdpath("data")/taskwarrior.nvim/backups/ before apply
   auto_backup_keep = 10,       -- number of recent backups to retain
   delegate = {
     command = "claude",
@@ -251,7 +253,7 @@ require("task").setup({
 If you have custom UDA fields (e.g. `utility`, `effort`) and want them to affect task sort order, use `urgency_coefficients`. For each field, the urgency adjustment is **value x coefficient** — proportional to the actual numeric value, not just whether the field is present:
 
 ```lua
-require("task").setup({
+require("taskwarrior").setup({
   urgency_coefficients = {
     utility = 1.0,     -- utility:8 adds +8, utility:20 adds +20
     effort = -0.5,     -- effort:60 subtracts -30 (do easy wins first)
@@ -264,7 +266,7 @@ The default is `{}` (no adjustments) — set only the fields you use.
 For non-linear urgency (e.g. `log(utility)` or `utility / effort`), use `custom_urgency` — a Lua function that receives the full task table and returns a number:
 
 ```lua
-require("task").setup({
+require("taskwarrior").setup({
   custom_urgency = function(task)
     local base = task.urgency or 0
     local utility = tonumber(task.utility) or 0
@@ -276,7 +278,7 @@ require("task").setup({
 
 ## How it works
 
-1. `:Task` runs the Lua backend (`lua/task/taskmd.lua`) which calls `task export`, parses the JSON, and renders markdown checkboxes with concealed `<!-- uuid:ab05fb51 -->` markers
+1. `:Task` runs the Lua backend (`lua/taskwarrior/taskmd.lua`) which calls `task export`, parses the JSON, and renders markdown checkboxes with concealed `<!-- uuid:ab05fb51 -->` markers
 2. You edit the buffer with standard vim operations
 3. On `:w`, the plugin diffs your edits against fresh Taskwarrior state
 4. A confirmation dialog shows what will change (`:TaskDiffPreview on` shows it live as you type)
@@ -287,7 +289,7 @@ UUID markers are invisible thanks to `conceallevel=3` + `concealcursor`, and sur
 
 ## Health check
 
-Run `:checkhealth task` to verify your setup (neovim version, Taskwarrior, optional Python, taskmd binary, data directory).
+Run `:checkhealth taskwarrior` to verify your setup (Neovim version, Taskwarrior CLI, optional Python, `taskmd` binary, data directory).
 
 ## CLI usage
 
@@ -309,7 +311,7 @@ Useful for: piping rendered tasks through `grep`/`fzf`, automating bulk operatio
 commands against your Taskwarrior database. There is no staging.
 
 By default (`auto_backup = true`), the plugin copies your Taskwarrior data
-directory to `stdpath("data")/task.nvim/backups/<timestamp>/` immediately
+directory to `stdpath("data")/taskwarrior.nvim/backups/<timestamp>/` immediately
 before any apply. The ten newest backups are kept; older ones are pruned.
 Disable with `auto_backup = false` in `setup()`.
 
@@ -322,8 +324,9 @@ backups are a convenience, not a replacement.
 
 ## Help
 
-Run `:help task.nvim` inside Neovim for the full reference, or see
-`doc/task.txt`. `:checkhealth task` verifies your setup.
+Run `:help taskwarrior.nvim` inside Neovim for the full reference, or read
+[`doc/taskwarrior.txt`](doc/taskwarrior.txt). `:checkhealth taskwarrior`
+verifies your setup.
 
 ## Contributing
 

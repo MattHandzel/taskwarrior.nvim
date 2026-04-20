@@ -1399,7 +1399,7 @@ class TestMultiWordUdaRoundTrip:
 # ---------------------------------------------------------------------------
 # TestStatusFilterDefault — regression for "filter includes completed tasks"
 #
-# Bug: `task.nvim filter project:X` (or any non-status filter) returned
+# Bug: `taskwarrior.nvim filter project:X` (or any non-status filter) returned
 # completed tasks in addition to pending. Expected: pending-only by default,
 # unless the filter explicitly includes a `status:` clause.
 # ---------------------------------------------------------------------------

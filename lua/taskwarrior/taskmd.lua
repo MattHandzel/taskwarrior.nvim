@@ -129,7 +129,7 @@ end
 -- Default value-to-number mappers keyed by field name. Used when the user
 -- has not configured `urgency_value_mappers`. Keep this list focused on
 -- cases where the TW-native storage format isn't directly numeric.
--- Users can override any entry via `require("task").setup{ urgency_value_mappers = {...} }`.
+-- Users can override any entry via `require("taskwarrior").setup{ urgency_value_mappers = {...} }`.
 M.DEFAULT_URGENCY_VALUE_MAPPERS = {}
 
 -- Resolves the mapper for a given field, given a (possibly nil) user override.

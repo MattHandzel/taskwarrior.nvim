@@ -12,7 +12,7 @@ function M.run(open_fn)
   local out, ok = run(
     "task rc.bulk=0 rc.confirmation=off rc.json.array=on status:pending export")
   if not ok or not out or out == "" then
-    vim.notify("task.nvim: failed to export tasks", vim.log.levels.ERROR)
+    vim.notify("taskwarrior.nvim: failed to export tasks", vim.log.levels.ERROR)
     return
   end
   local js = out
@@ -20,7 +20,7 @@ function M.run(open_fn)
   if s and s > 1 then js = js:sub(s) end
   local parsed_ok, tasks = pcall(vim.fn.json_decode, js)
   if not parsed_ok or type(tasks) ~= "table" or #tasks == 0 then
-    vim.notify("task.nvim: no pending tasks", vim.log.levels.INFO)
+    vim.notify("taskwarrior.nvim: no pending tasks", vim.log.levels.INFO)
     return
   end
   -- Sort by urgency desc for review order
@@ -29,7 +29,7 @@ function M.run(open_fn)
   local idx = 1
   local function step()
     if idx > #tasks then
-      vim.notify(string.format("task.nvim: review complete (%d tasks)", #tasks))
+      vim.notify(string.format("taskwarrior.nvim: review complete (%d tasks)", #tasks))
       return
     end
     local t = tasks[idx]
@@ -74,7 +74,7 @@ function M.run(open_fn)
       elseif key == "g" then
         open_fn("uuid:" .. short)
       elseif key == "q" then
-        vim.notify(string.format("task.nvim: review paused at %d/%d", idx, #tasks))
+        vim.notify(string.format("taskwarrior.nvim: review paused at %d/%d", idx, #tasks))
       end
     end)
   end

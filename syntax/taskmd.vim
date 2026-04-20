@@ -1,4 +1,4 @@
-" Syntax highlighting for task.nvim rendered markdown.
+" Syntax highlighting for taskwarrior.nvim rendered markdown.
 " Inherits markdown and adds fieldname:value / +tag / priority / uuid rules.
 
 if exists('b:current_syntax') && b:current_syntax ==# 'taskmd'

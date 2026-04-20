@@ -1,7 +1,16 @@
 local M = {}
 
 local function projects_file()
-  return vim.fn.stdpath("data") .. "/task_nvim_projects.json"
+  local data = vim.fn.stdpath("data")
+  local new_path = data .. "/taskwarrior_nvim_projects.json"
+  -- Migrate from pre-rename path (task.nvim → taskwarrior.nvim, v1.3.0).
+  if vim.fn.filereadable(new_path) == 0 then
+    local old_path = data .. "/task_nvim_projects.json"
+    if vim.fn.filereadable(old_path) == 1 then
+      pcall(vim.loop.fs_rename, old_path, new_path)
+    end
+  end
+  return new_path
 end
 
 local function load_projects()
@@ -24,7 +33,7 @@ local function save_projects(projects)
 end
 
 function M.detect()
-  local config = require("task.config")
+  local config = require("taskwarrior.config")
   local cwd = vim.fn.getcwd()
   local saved = load_projects()
   local all = vim.tbl_extend("keep", config.options.projects or {}, saved)
@@ -45,7 +54,7 @@ function M.add(name)
   local projects = load_projects()
   projects[cwd] = name
   save_projects(projects)
-  vim.notify(string.format("task.nvim: project '%s' → %s", name, cwd))
+  vim.notify(string.format("taskwarrior.nvim: project '%s' → %s", name, cwd))
 end
 
 function M.remove()
@@ -55,21 +64,21 @@ function M.remove()
     local name = projects[cwd]
     projects[cwd] = nil
     save_projects(projects)
-    vim.notify(string.format("task.nvim: removed project '%s' from %s", name, cwd))
+    vim.notify(string.format("taskwarrior.nvim: removed project '%s' from %s", name, cwd))
   else
-    vim.notify("task.nvim: no project registered for " .. cwd, vim.log.levels.WARN)
+    vim.notify("taskwarrior.nvim: no project registered for " .. cwd, vim.log.levels.WARN)
   end
 end
 
 function M.list()
-  local config = require("task.config")
+  local config = require("taskwarrior.config")
   local saved = load_projects()
   local all = vim.tbl_extend("keep", config.options.projects or {}, saved)
   if vim.tbl_isempty(all) then
-    vim.notify("task.nvim: no projects registered")
+    vim.notify("taskwarrior.nvim: no projects registered")
     return
   end
-  local lines = { "task.nvim projects:" }
+  local lines = { "taskwarrior.nvim projects:" }
   for dir, name in pairs(all) do
     table.insert(lines, string.format("  %s → %s", name, dir))
   end

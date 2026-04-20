@@ -1,4 +1,4 @@
--- Telescope extension for task.nvim. Provides a fuzzy picker over pending
+-- Telescope extension for taskwarrior.nvim. Provides a fuzzy picker over pending
 -- Taskwarrior tasks. Loads only when the user has telescope installed; this
 -- file is picked up automatically by `require("telescope").load_extension("task")`.
 
@@ -63,7 +63,7 @@ local function picker(opts)
   for _, t in ipairs(tasks) do table.insert(entries, entry_for(t)) end
 
   pickers.new(opts, {
-    prompt_title = "task.nvim — " .. (opts.filter or "status:pending"),
+    prompt_title = "taskwarrior.nvim — " .. (opts.filter or "status:pending"),
     finder = finders.new_table({
       results = entries,
       entry_maker = function(e) return e end,
@@ -75,9 +75,9 @@ local function picker(opts)
         local selection = action_state.get_selected_entry()
         actions.close(prompt_bufnr)
         if not selection or not selection.short then return end
-        -- Open task.nvim buffer filtered to this one task
-        pcall(require, "task")
-        require("task").open("uuid:" .. selection.short)
+        -- Open taskwarrior.nvim buffer filtered to this one task
+        pcall(require, "taskwarrior")
+        require("taskwarrior").open("uuid:" .. selection.short)
       end)
       -- <C-x>: mark task done
       map({ "i", "n" }, "<C-x>", function()
@@ -86,7 +86,7 @@ local function picker(opts)
         vim.fn.system(string.format(
           "task rc.bulk=0 rc.confirmation=off %s done", selection.short))
         actions.close(prompt_bufnr)
-        vim.notify("task.nvim: marked " .. selection.short .. " done")
+        vim.notify("taskwarrior.nvim: marked " .. selection.short .. " done")
       end)
       -- <C-s>: start/stop
       map({ "i", "n" }, "<C-s>", function()
@@ -97,7 +97,7 @@ local function picker(opts)
         vim.fn.system(string.format(
           "task rc.bulk=0 rc.confirmation=off %s %s", selection.short, cmd))
         actions.close(prompt_bufnr)
-        vim.notify(string.format("task.nvim: %s %s", cmd, selection.short))
+        vim.notify(string.format("taskwarrior.nvim: %s %s", cmd, selection.short))
       end)
       return true
     end,

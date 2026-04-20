@@ -1,7 +1,7 @@
 local M = {}
 
 -- setup: register every :Task* user command on the running nvim.
---   main: the require("task") module (so we can forward to M.open, M.filter, …)
+--   main: the require("taskwarrior") module (so we can forward to M.open, M.filter, …)
 --   complete_filter: arg-lead → completion list (kept as a closure in init.lua)
 function M.setup(main, complete_filter)
   vim.api.nvim_create_user_command("Task", function(cmd_opts)
@@ -65,7 +65,7 @@ function M.setup(main, complete_filter)
 
   vim.api.nvim_create_user_command("TaskHelp", function()
     main.help()
-  end, { nargs = 0, desc = "Show task.nvim help" })
+  end, { nargs = 0, desc = "Show taskwarrior.nvim help" })
 
   vim.api.nvim_create_user_command("TaskProjectAdd", function(cmd_opts)
     main.project_add(cmd_opts.args)
@@ -125,7 +125,7 @@ function M.setup(main, complete_filter)
   end, { nargs = 0, desc = "Walk through pending tasks one at a time" })
 
   vim.api.nvim_create_user_command("TaskDiffPreview", function(cmd_opts)
-    local dp = require("task.diff_preview")
+    local dp = require("taskwarrior.diff_preview")
     local a = cmd_opts.args
     if a == "on" then dp.enable()
     elseif a == "off" then dp.disable()
@@ -137,7 +137,7 @@ function M.setup(main, complete_filter)
   })
 
   -- Visualization commands
-  local views = require("task.views")
+  local views = require("taskwarrior.views")
 
   vim.api.nvim_create_user_command("TaskBurndown", function()
     views.burndown()
@@ -161,8 +161,8 @@ function M.setup(main, complete_filter)
 
   -- Structured feedback buffer (opt-in; needs feedback_endpoint in setup)
   vim.api.nvim_create_user_command("TaskFeedback", function()
-    require("task.feedback").open()
-  end, { desc = "Send structured feedback about task.nvim" })
+    require("taskwarrior.feedback").open()
+  end, { desc = "Send structured feedback about taskwarrior.nvim" })
 end
 
 return M

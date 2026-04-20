@@ -1,4 +1,4 @@
--- task/views.lua — Visualization views for task.nvim
+-- taskwarrior/views.lua — Visualization views for taskwarrior.nvim
 local M = {}
 
 -- Track open view buffers for refresh
@@ -23,7 +23,7 @@ local function export_tasks(filter)
 end
 
 -- Highlight groups for views
-local hl_ns = vim.api.nvim_create_namespace("task_views_hl")
+local hl_ns = vim.api.nvim_create_namespace("taskwarrior_views_hl")
 
 local function define_view_highlights()
   vim.api.nvim_set_hl(0, "TaskViewTitle", { fg = "#cdd6f4", bold = true })
@@ -81,7 +81,7 @@ local function open_scratch(name, lines, highlights, render_fn)
 
   local buf = vim.api.nvim_create_buf(false, true)
   vim.bo[buf].buftype = "nofile"
-  vim.bo[buf].filetype = "task_view"
+  vim.bo[buf].filetype = "taskwarrior_view"
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, clean)
   vim.bo[buf].modifiable = false
 
@@ -230,7 +230,7 @@ function M.burndown()
   local function do_render()
     local tasks = export_tasks("status:pending or status:completed")
     if #tasks == 0 then
-      vim.notify("task.nvim: no tasks found for burndown")
+      vim.notify("taskwarrior.nvim: no tasks found for burndown")
       return
     end
 
@@ -253,7 +253,7 @@ function M.burndown()
     table.sort(dates)
 
     if #dates == 0 then
-      vim.notify("task.nvim: no date data for burndown")
+      vim.notify("taskwarrior.nvim: no date data for burndown")
       return
     end
 
@@ -271,7 +271,7 @@ function M.burndown()
 
     local chart_height = 20
     local chart_width = math.min(#data_points, 60)
-    local lines = { "task.nvim — Burndown Chart", string.rep("═", 60), "" }
+    local lines = { "taskwarrior.nvim — Burndown Chart", string.rep("═", 60), "" }
     local highlights = {
       { 0, 0, #lines[1], "TaskViewTitle" },
       { 1, 0, #lines[2], "TaskViewSeparator" },
@@ -356,7 +356,7 @@ function M.burndown()
     table.insert(lines, "  Press q to close")
     table.insert(highlights, { #lines - 1, 0, #lines[#lines], "TaskViewHint" })
 
-    open_scratch("task.nvim Burndown", lines, highlights, do_render)
+    open_scratch("taskwarrior.nvim Burndown", lines, highlights, do_render)
   end
   do_render()
 end
@@ -369,7 +369,7 @@ function M.tree()
   local function do_render()
     local tasks = export_tasks("status:pending")
     if #tasks == 0 then
-      vim.notify("task.nvim: no pending tasks")
+      vim.notify("taskwarrior.nvim: no pending tasks")
       return
     end
 
@@ -385,7 +385,7 @@ function M.tree()
       end
     end
 
-    local lines = { "task.nvim — Dependency Tree", string.rep("═", 60), "" }
+    local lines = { "taskwarrior.nvim — Dependency Tree", string.rep("═", 60), "" }
     local highlights = {
       { 0, 0, #lines[1], "TaskViewTitle" },
       { 1, 0, #lines[2], "TaskViewSeparator" },
@@ -438,7 +438,7 @@ function M.tree()
     table.insert(lines, "  Press q to close")
     table.insert(highlights, { #lines - 1, 0, #lines[#lines], "TaskViewHint" })
 
-    open_scratch("task.nvim Dependencies", lines, highlights, do_render)
+    open_scratch("taskwarrior.nvim Dependencies", lines, highlights, do_render)
   end
   do_render()
 end
@@ -481,7 +481,7 @@ function M.summary()
     end
     table.sort(sorted, function(a, b) return a.data.pending > b.data.pending end)
 
-    local lines = { "task.nvim — Project Summary", string.rep("═", 70), "" }
+    local lines = { "taskwarrior.nvim — Project Summary", string.rep("═", 70), "" }
     local highlights = {
       { 0, 0, #lines[1], "TaskViewTitle" },
       { 1, 0, #lines[2], "TaskViewSeparator" },
@@ -543,7 +543,7 @@ function M.summary()
     table.insert(lines, "  Press q to close")
     table.insert(highlights, { #lines - 1, 0, #lines[#lines], "TaskViewHint" })
 
-    open_scratch("task.nvim Summary", lines, highlights, do_render)
+    open_scratch("taskwarrior.nvim Summary", lines, highlights, do_render)
   end
   do_render()
 end
@@ -556,7 +556,7 @@ function M.calendar()
   local function do_render()
     local tasks = export_tasks("status:pending")
     if #tasks == 0 then
-      vim.notify("task.nvim: no pending tasks")
+      vim.notify("taskwarrior.nvim: no pending tasks")
       return
     end
 
@@ -577,7 +577,7 @@ function M.calendar()
     table.sort(date_list)
 
     local today = os.date("!%Y-%m-%d")
-    local lines = { "task.nvim — Calendar View", string.rep("═", 60), "" }
+    local lines = { "taskwarrior.nvim — Calendar View", string.rep("═", 60), "" }
     local highlights = {
       { 0, 0, #lines[1], "TaskViewTitle" },
       { 1, 0, #lines[2], "TaskViewSeparator" },
@@ -633,7 +633,7 @@ function M.calendar()
     table.insert(lines, "  Press q to close")
     table.insert(highlights, { #lines - 1, 0, #lines[#lines], "TaskViewHint" })
 
-    open_scratch("task.nvim Calendar", lines, highlights, do_render)
+    open_scratch("taskwarrior.nvim Calendar", lines, highlights, do_render)
   end
   do_render()
 end
@@ -660,7 +660,7 @@ function M.tags()
     end
     table.sort(sorted, function(a, b) return a.count > b.count end)
 
-    local lines = { "task.nvim — Tags", string.rep("═", 50), "" }
+    local lines = { "taskwarrior.nvim — Tags", string.rep("═", 50), "" }
     local highlights = {
       { 0, 0, #lines[1], "TaskViewTitle" },
       { 1, 0, #lines[2], "TaskViewSeparator" },
@@ -697,7 +697,7 @@ function M.tags()
     table.insert(lines, "  Press q to close")
     table.insert(highlights, { #lines - 1, 0, #lines[#lines], "TaskViewHint" })
 
-    open_scratch("task.nvim Tags", lines, highlights, do_render)
+    open_scratch("taskwarrior.nvim Tags", lines, highlights, do_render)
   end
   do_render()
 end

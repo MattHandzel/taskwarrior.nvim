@@ -53,7 +53,7 @@ Sleep 1500ms
 Enter
 Sleep 1200ms
 
-# Save — task.nvim diffs against Taskwarrior and applies
+# Save — taskwarrior.nvim diffs against Taskwarrior and applies
 Type ":w"
 Sleep 800ms
 Enter

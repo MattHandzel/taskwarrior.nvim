@@ -14,26 +14,26 @@ end
 function M.delegate_one()
   local bufnr = vim.api.nvim_get_current_buf()
   if vim.b[bufnr].task_filter == nil then
-    vim.notify("task.nvim: not in a task buffer", vim.log.levels.WARN)
+    vim.notify("taskwarrior.nvim: not in a task buffer", vim.log.levels.WARN)
     return
   end
   local line = vim.api.nvim_get_current_line()
   local short_uuid = uuid_from_line(line)
   if not short_uuid then
-    vim.notify("task.nvim: no UUID on this line", vim.log.levels.WARN)
+    vim.notify("taskwarrior.nvim: no UUID on this line", vim.log.levels.WARN)
     return
   end
   local out, ok = run(
     string.format("task rc.bulk=0 rc.confirmation=off rc.json.array=on %s export", short_uuid))
   if not ok or not out or out == "" then
-    vim.notify("task.nvim: failed to export task", vim.log.levels.ERROR)
+    vim.notify("taskwarrior.nvim: failed to export task", vim.log.levels.ERROR)
     return
   end
   local json_start = out:find("%[")
   if json_start and json_start > 1 then out = out:sub(json_start) end
   local parsed_ok, tasks = pcall(vim.fn.json_decode, out)
   if not parsed_ok or type(tasks) ~= "table" or #tasks == 0 then
-    vim.notify("task.nvim: failed to parse task", vim.log.levels.ERROR)
+    vim.notify("taskwarrior.nvim: failed to parse task", vim.log.levels.ERROR)
     return
   end
   return tasks[1], short_uuid
@@ -79,7 +79,7 @@ local function build_task_prompt(task_infos, extra_context)
   local p = {}
   local function add(s) table.insert(p, s) end
 
-  add(string.format("You have been delegated %d task%s from Taskwarrior via task.nvim.",
+  add(string.format("You have been delegated %d task%s from Taskwarrior via taskwarrior.nvim.",
     n, n == 1 and "" or "s"))
   add("")
   add("# How the user watches your progress")
@@ -140,7 +140,7 @@ local function build_task_prompt(task_infos, extra_context)
 end
 
 local function run_claude_in_terminal(prompt, opts)
-  local cfg = require("task.config").options.delegate or {}
+  local cfg = require("taskwarrior.config").options.delegate or {}
   local command = opts.command or cfg.command or "claude"
   local flags = opts.flags or cfg.flags or ""
   local system_prompt_file = opts.system_prompt_file or cfg.system_prompt_file
@@ -191,7 +191,7 @@ end
 function M.collect(range)
   local bufnr = vim.api.nvim_get_current_buf()
   if vim.b[bufnr].task_filter == nil then
-    vim.notify("task.nvim: not in a task buffer", vim.log.levels.WARN)
+    vim.notify("taskwarrior.nvim: not in a task buffer", vim.log.levels.WARN)
     return nil
   end
 
@@ -208,7 +208,7 @@ function M.collect(range)
   end
 
   if #short_uuids == 0 then
-    vim.notify("task.nvim: no task UUID on cursor/range", vim.log.levels.WARN)
+    vim.notify("taskwarrior.nvim: no task UUID on cursor/range", vim.log.levels.WARN)
     return nil
   end
 
@@ -216,14 +216,14 @@ function M.collect(range)
   local out, ok = run(
     string.format("task rc.bulk=0 rc.confirmation=off rc.json.array=on %s export", filter))
   if not ok or not out or out == "" then
-    vim.notify("task.nvim: failed to export tasks", vim.log.levels.ERROR)
+    vim.notify("taskwarrior.nvim: failed to export tasks", vim.log.levels.ERROR)
     return nil
   end
   local json_start = out:find("%[")
   if json_start and json_start > 1 then out = out:sub(json_start) end
   local parsed_ok, tasks = pcall(vim.fn.json_decode, out)
   if not parsed_ok or type(tasks) ~= "table" or #tasks == 0 then
-    vim.notify("task.nvim: failed to parse tasks", vim.log.levels.ERROR)
+    vim.notify("taskwarrior.nvim: failed to parse tasks", vim.log.levels.ERROR)
     return nil
   end
 
@@ -244,7 +244,7 @@ end
 -- prompt, honoring the current config + per-invocation overrides.
 local function build_claude_command(prompt, opts)
   opts = opts or {}
-  local cfg = require("task.config").options.delegate or {}
+  local cfg = require("taskwarrior.config").options.delegate or {}
   local command = opts.command or cfg.command or "claude"
   local flags = opts.flags or cfg.flags or ""
   local system_prompt_file = opts.system_prompt_file or cfg.system_prompt_file
@@ -283,7 +283,7 @@ function M.copy(mode, opts)
   pcall(vim.fn.setreg, "+", payload)
   pcall(vim.fn.setreg, '"', payload)
   vim.notify(string.format(
-    "task.nvim: copied %s (%d bytes, %d task%s) to + register",
+    "taskwarrior.nvim: copied %s (%d bytes, %d task%s) to + register",
     label, #payload, #infos, #infos == 1 and "" or "s"))
   return payload
 end
@@ -295,7 +295,7 @@ function M.open_popup(opts)
   local infos = M.collect(opts.range)
   if not infos then return end
 
-  local cfg = require("task.config").options.delegate or {}
+  local cfg = require("taskwarrior.config").options.delegate or {}
   local buf = vim.api.nvim_create_buf(false, true)
   vim.bo[buf].buftype = "nofile"
   vim.bo[buf].bufhidden = "wipe"
@@ -342,7 +342,7 @@ function M.open_popup(opts)
     row = math.floor((vim.o.lines - height) / 2),
     col = math.floor((vim.o.columns - width) / 2),
     style = "minimal",
-    border = (require("task.config").options.border_style or "rounded"),
+    border = (require("taskwarrior.config").options.border_style or "rounded"),
     title = #infos > 1
       and string.format(" TaskDelegate (%d tasks) ", #infos)
       or " TaskDelegate ",

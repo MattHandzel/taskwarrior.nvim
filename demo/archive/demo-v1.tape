@@ -38,7 +38,7 @@ Show
 # Demo starts
 Sleep 1
 
-Type "# task.nvim — Edit Taskwarrior tasks as markdown"
+Type "# taskwarrior.nvim — Edit Taskwarrior tasks as markdown"
 Enter
 Sleep 1.5
 

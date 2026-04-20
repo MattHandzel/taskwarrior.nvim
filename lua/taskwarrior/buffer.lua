@@ -5,7 +5,7 @@ local M = {}
 -- ---------------------------------------------------------------------------
 
 local function get_taskmd_path()
-  local config = require("task.config")
+  local config = require("taskwarrior.config")
   if config.options.taskmd_path then
     return config.options.taskmd_path
   end
@@ -42,11 +42,11 @@ end
 -- ---------------------------------------------------------------------------
 
 local function render(filter, sort, group)
-  local config = require("task.config")
+  local config = require("taskwarrior.config")
 
   -- Try the Lua backend first unless the user explicitly asked for python.
   if config.options.backend ~= "python" then
-    local ok_m, tm = pcall(require, "task.taskmd")
+    local ok_m, tm = pcall(require, "taskwarrior.taskmd")
     if ok_m then
       local filter_args = {}
       if filter and filter ~= "" then
@@ -63,7 +63,7 @@ local function render(filter, sort, group)
       if ok_r and type(result) == "string" then
         return result
       end
-      vim.notify("task.nvim: Lua backend render failed (" .. tostring(result) .. "); falling back to Python",
+      vim.notify("taskwarrior.nvim: Lua backend render failed (" .. tostring(result) .. "); falling back to Python",
         vim.log.levels.WARN)
     end
   end
@@ -85,7 +85,7 @@ local function render(filter, sort, group)
 
   local out, ok = run(table.concat(cmd, " "))
   if not ok then
-    vim.notify("task.nvim: render failed\n" .. out, vim.log.levels.ERROR)
+    vim.notify("taskwarrior.nvim: render failed\n" .. out, vim.log.levels.ERROR)
     return nil
   end
   return out
@@ -98,7 +98,7 @@ M.render = render
 -- ---------------------------------------------------------------------------
 
 local function apply_custom_sort(bufnr)
-  local config = require("task.config")
+  local config = require("taskwarrior.config")
   if not config.options.custom_urgency then return end
 
   -- Export tasks to get full data for the custom function
@@ -116,7 +116,7 @@ local function apply_custom_sort(bufnr)
   -- Non-numeric values go through user-configurable mappers.
   local coeffs = config.options.urgency_coefficients
   if coeffs and next(coeffs) then
-    local tm_ok, tm = pcall(require, "task.taskmd")
+    local tm_ok, tm = pcall(require, "taskwarrior.taskmd")
     local user_mappers = config.options.urgency_value_mappers
     for _, t in ipairs(tasks) do
       local adj = 0
@@ -189,8 +189,8 @@ end
 -- Namespaces (module-level singletons)
 -- ---------------------------------------------------------------------------
 
-local hl_ns = vim.api.nvim_create_namespace("task_nvim_hl")
-local vt_ns = vim.api.nvim_create_namespace("task_nvim_vt")
+local hl_ns = vim.api.nvim_create_namespace("taskwarrior_hl")
+local vt_ns = vim.api.nvim_create_namespace("taskwarrior_vt")
 
 -- ---------------------------------------------------------------------------
 -- Virtual text (urgency + annotation count)
@@ -214,7 +214,7 @@ local function apply_virtual_text(bufnr)
   local parsed_ok, tasks = pcall(vim.fn.json_decode, out)
   if not parsed_ok or type(tasks) ~= "table" then return end
 
-  local config = require("task.config")
+  local config = require("taskwarrior.config")
   local meta = {}
   for _, t in ipairs(tasks) do
     if t.uuid then
@@ -444,9 +444,9 @@ function M.refresh_buf(bufnr)
   -- Update header-protection cache with the freshly-rendered header so the
   -- TextChanged guard doesn't revert to the previous filter/sort/group.
   vim.b[bufnr].taskmd_header_cache = vim.api.nvim_buf_get_lines(bufnr, 0, 1, false)[1] or ""
-  pcall(vim.api.nvim_exec_autocmds, "User", { pattern = "TaskNvimRefresh" })
+  pcall(vim.api.nvim_exec_autocmds, "User", { pattern = "TaskwarriorRefresh" })
   -- Refresh any open visualization views
-  pcall(function() require("task.views").refresh_all() end)
+  pcall(function() require("taskwarrior.views").refresh_all() end)
 end
 
 -- ---------------------------------------------------------------------------
@@ -458,7 +458,7 @@ function M.setup_buf_syntax(bufnr)
   update_highlights(bufnr)
 
   -- Set up autocmds for dynamic re-highlighting on text changes
-  local hl_group = vim.api.nvim_create_augroup("TaskNvimHL_" .. bufnr, { clear = true })
+  local hl_group = vim.api.nvim_create_augroup("TaskwarriorHL_" .. bufnr, { clear = true })
 
   vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
     buffer = bufnr,
@@ -532,7 +532,7 @@ function M.setup_buf_keymaps(bufnr)
     local line = vim.api.nvim_get_current_line()
     local short_uuid = uuid_from_line(line)
     if not short_uuid then
-      vim.notify("task.nvim: no UUID on this line", vim.log.levels.WARN)
+      vim.notify("taskwarrior.nvim: no UUID on this line", vim.log.levels.WARN)
       return
     end
     vim.ui.input({ prompt = "Annotation: " }, function(text)
@@ -542,10 +542,10 @@ function M.setup_buf_keymaps(bufnr)
           short_uuid, vim.fn.shellescape(text))
       )
       if ok then
-        vim.notify("task.nvim: annotation added")
+        vim.notify("taskwarrior.nvim: annotation added")
         M.refresh_buf(bufnr)
       else
-        vim.notify("task.nvim: annotation failed", vim.log.levels.ERROR)
+        vim.notify("taskwarrior.nvim: annotation failed", vim.log.levels.ERROR)
       end
     end)
   end, opts)
@@ -555,12 +555,12 @@ function M.setup_buf_keymaps(bufnr)
     local line = vim.api.nvim_get_current_line()
     local short_uuid = uuid_from_line(line)
     if not short_uuid then
-      vim.notify("task.nvim: no UUID on this line", vim.log.levels.WARN)
+      vim.notify("taskwarrior.nvim: no UUID on this line", vim.log.levels.WARN)
       return
     end
     vim.ui.input({
       prompt = "Modify (e.g. +tag project:foo due:tomorrow): ",
-      completion = "custom,v:lua.require'task'._complete_modify",
+      completion = "custom,v:lua.require'taskwarrior'._complete_modify",
     }, function(input)
       if not input or input == "" then return end
       local escaped = input:gsub("'", "'\\''")
@@ -569,42 +569,42 @@ function M.setup_buf_keymaps(bufnr)
           short_uuid, escaped)
       )
       if ok then
-        vim.notify("task.nvim: modified")
+        vim.notify("taskwarrior.nvim: modified")
         M.refresh_buf(bufnr)
       else
-        vim.notify("task.nvim: modify failed", vim.log.levels.ERROR)
+        vim.notify("taskwarrior.nvim: modify failed", vim.log.levels.ERROR)
       end
     end)
   end, opts)
 
   -- Filter presets from config
-  local config = require("task.config")
+  local config = require("taskwarrior.config")
   for _, preset in ipairs(config.options.filters or {}) do
     if preset.key and preset.filter then
       vim.keymap.set("n", preset.key, function()
         vim.b[bufnr].task_filter = preset.filter
         M.refresh_buf(bufnr)
-        vim.notify("task.nvim: filter → " .. (preset.label or preset.filter))
+        vim.notify("taskwarrior.nvim: filter → " .. (preset.label or preset.filter))
       end, { buffer = bufnr, noremap = true, silent = true,
-             desc = "task.nvim: " .. (preset.label or preset.filter) })
+             desc = "taskwarrior.nvim: " .. (preset.label or preset.filter) })
     end
   end
 
   -- Buffer-local filter key (uses input() for tab completion support)
-  local config2 = require("task.config")
+  local config2 = require("taskwarrior.config")
   if config2.options.filter_key then
     vim.keymap.set("n", config2.options.filter_key, function()
       -- Use vim.fn.input with completion so <Tab> works
       local ok, input = pcall(vim.fn.input, {
         prompt = "Filter: ",
         default = vim.b[bufnr].task_filter or "",
-        completion = "customlist,v:lua.require'task'._complete_filter",
+        completion = "customlist,v:lua.require'taskwarrior'._complete_filter",
       })
       if not ok or input == nil then return end
       vim.b[bufnr].task_filter = input
       M.refresh_buf(bufnr)
-      vim.notify("task.nvim: filter → " .. (input ~= "" and input or "(all pending)"))
-    end, { buffer = bufnr, noremap = true, silent = true, desc = "task.nvim: Change filter" })
+      vim.notify("taskwarrior.nvim: filter → " .. (input ~= "" and input or "(all pending)"))
+    end, { buffer = bufnr, noremap = true, silent = true, desc = "taskwarrior.nvim: Change filter" })
   end
 
   -- Buffer-local sort key
@@ -613,13 +613,13 @@ function M.setup_buf_keymaps(bufnr)
       local ok, input = pcall(vim.fn.input, {
         prompt = "Sort: ",
         default = vim.b[bufnr].task_sort or "urgency-",
-        completion = "customlist,v:lua.require'task'._complete_sort",
+        completion = "customlist,v:lua.require'taskwarrior'._complete_sort",
       })
       if not ok or input == nil then return end
       vim.b[bufnr].task_sort = input
       M.refresh_buf(bufnr)
-      vim.notify("task.nvim: sort → " .. input)
-    end, { buffer = bufnr, noremap = true, silent = true, desc = "task.nvim: Change sort" })
+      vim.notify("taskwarrior.nvim: sort → " .. input)
+    end, { buffer = bufnr, noremap = true, silent = true, desc = "taskwarrior.nvim: Change sort" })
   end
 
   -- Buffer-local group key
@@ -628,13 +628,13 @@ function M.setup_buf_keymaps(bufnr)
       local ok, input = pcall(vim.fn.input, {
         prompt = "Group by (empty=none): ",
         default = vim.b[bufnr].task_group or "",
-        completion = "customlist,v:lua.require'task'._complete_group",
+        completion = "customlist,v:lua.require'taskwarrior'._complete_group",
       })
       if not ok or input == nil then return end
       vim.b[bufnr].task_group = (input ~= "" and input ~= "none") and input or nil
       M.refresh_buf(bufnr)
-      vim.notify("task.nvim: group → " .. (input ~= "" and input or "(none)"))
-    end, { buffer = bufnr, noremap = true, silent = true, desc = "task.nvim: Change grouping" })
+      vim.notify("taskwarrior.nvim: group → " .. (input ~= "" and input or "(none)"))
+    end, { buffer = bufnr, noremap = true, silent = true, desc = "taskwarrior.nvim: Change grouping" })
   end
 
   -- Show full task info in split
@@ -642,14 +642,14 @@ function M.setup_buf_keymaps(bufnr)
     local line = vim.api.nvim_get_current_line()
     local short_uuid = uuid_from_line(line)
     if not short_uuid then
-      vim.notify("task.nvim: no UUID on this line", vim.log.levels.WARN)
+      vim.notify("taskwarrior.nvim: no UUID on this line", vim.log.levels.WARN)
       return
     end
     local out, ok = run(
       string.format("task rc.bulk=0 rc.confirmation=off %s info", short_uuid)
     )
     if not ok or out == "" then
-      vim.notify("task.nvim: info failed", vim.log.levels.ERROR)
+      vim.notify("taskwarrior.nvim: info failed", vim.log.levels.ERROR)
       return
     end
     local detail_buf = vim.api.nvim_create_buf(false, true)
@@ -667,7 +667,7 @@ end
 -- ---------------------------------------------------------------------------
 
 function M.setup_buf_autocmds(bufnr, on_write_fn)
-  local group = vim.api.nvim_create_augroup("TaskNvim_" .. bufnr, { clear = true })
+  local group = vim.api.nvim_create_augroup("Taskwarrior_" .. bufnr, { clear = true })
 
   vim.api.nvim_create_autocmd("BufWriteCmd", {
     buffer = bufnr,
@@ -704,17 +704,17 @@ function M.setup_buf_autocmds(bufnr, on_write_fn)
       local first_line = vim.api.nvim_buf_get_lines(bufnr, 0, 1, false)[1] or ""
       if first_line ~= cached and cached:match("^<!%-%-.*taskmd") then
         vim.api.nvim_buf_set_lines(bufnr, 0, 1, false, { cached })
-        vim.notify("task.nvim: header is read-only (use :TaskFilter to change filter)", vim.log.levels.WARN)
+        vim.notify("taskwarrior.nvim: header is read-only (use :TaskFilter to change filter)", vim.log.levels.WARN)
       end
     end,
   })
 
   -- Update header cache when buffer is refreshed (filter/sort/group changes).
   -- User events don't carry buffer context, so this autocmd fires for every
-  -- task buffer's TaskNvimRefresh — guard against stale closures over wiped
+  -- task buffer's TaskwarriorRefresh — guard against stale closures over wiped
   -- buffers, and self-clean the augroup if the buffer is gone.
   vim.api.nvim_create_autocmd("User", {
-    pattern = "TaskNvimRefresh",
+    pattern = "TaskwarriorRefresh",
     group = group,
     callback = function()
       if not vim.api.nvim_buf_is_valid(bufnr) then
@@ -737,7 +737,7 @@ function M.setup_buf_autocmds(bufnr, on_write_fn)
   -- column, which causes the very next j/k to snap to that column and makes
   -- it feel like j "doesn't work" after a row where the cursor was near the
   -- concealed UUID region (especially after $ or across blank/group lines).
-  local config = require("task.config")
+  local config = require("taskwarrior.config")
   if config.options.clamp_cursor then
     vim.b[bufnr].taskmd_last_row = nil
     vim.api.nvim_create_autocmd("CursorMoved", {
@@ -767,7 +767,7 @@ end
 -- ---------------------------------------------------------------------------
 
 function M.open_task_buf(filter_str, on_write_fn, detect_project_fn)
-  local config = require("task.config")
+  local config = require("taskwarrior.config")
   filter_str = filter_str or ""
 
   -- Auto-detect project filter from cwd when no filter is given
