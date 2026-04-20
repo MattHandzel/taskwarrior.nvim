@@ -1,6 +1,6 @@
--- Minimal, opinionated init.lua for task.nvim demo recordings.
+-- Minimal, opinionated init.lua for taskwarrior.nvim demo recordings.
 -- Keeps the plugin surface visible with no distractions: no plugin manager,
--- no statusline clutter, no telescope popups, just task.nvim + basic colors.
+-- no statusline clutter, no telescope popups, just taskwarrior.nvim + basic colors.
 
 vim.opt.termguicolors = true
 vim.opt.number = false
@@ -27,7 +27,7 @@ vim.opt.runtimepath:prepend(plugin_dir)
 -- Leader before setup so <leader>ta binding takes effect
 vim.g.mapleader = " "
 
-require("task").setup({
+require("taskwarrior").setup({
   confirm = false, -- auto-apply so the demo doesn't stall on a dialog
   sort = "urgency-",
   group = nil,

@@ -16,9 +16,10 @@
 
 <!-- How did you verify this works? -->
 
-- [ ] `python3 -m pytest tests/ -v` passes locally
+- [ ] `python3 -m pytest tests/ -v` passes locally (358 tests)
+- [ ] `./tests/lua/bootstrap.sh` passes locally (121+ Lua assertions)
 - [ ] Added or updated tests for the change
-- [ ] Tried the feature in a real nvim session (attach a GIF / screenshot
+- [ ] Tried the feature in a real Neovim session (attach a GIF / screenshot
   if UI-visible)
 
 ## Checklist

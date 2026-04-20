@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Seed a realistic taskwarrior db for the task.nvim demo GIFs.
+# Seed a realistic taskwarrior db for the taskwarrior.nvim demo GIFs.
 # This gets run inside the VHS container before each tape. It builds a small
 # but believable set of tasks that make the plugin look useful.
 set -euo pipefail
@@ -32,7 +32,7 @@ add "Upgrade CI runners to Ubuntu 24.04" project:work.infra priority:M
 add "Audit IAM policies for prod buckets" project:work.infra priority:M +security
 
 # --- writing ---
-add "Draft launch blog post for task.nvim" project:writing priority:M due:monday
+add "Draft launch blog post for taskwarrior.nvim" project:writing priority:M due:monday
 add "Outline talk: editing taskwarrior like oil.nvim" project:writing priority:L
 
 # --- personal ---

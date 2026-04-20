@@ -1,7 +1,7 @@
 local M = {}
 
 local function get_taskmd_path()
-  local config = require("task.config")
+  local config = require("taskwarrior.config")
   if config.options.taskmd_path then
     return config.options.taskmd_path
   end
@@ -22,35 +22,35 @@ end
 
 -- Auto-setup guard
 local function ensure_setup()
-  local config = require("task.config")
+  local config = require("taskwarrior.config")
   if not next(config.options) then M.setup({}) end
 end
 
-local function detect_project()    return require("task.projects").detect() end
-local function get_tw_completions() return require("task.completion").get_tw_completions() end
-local function complete_filter(a)  return require("task.completion").complete_filter(a) end
-local function set_buf_lines(b, t) require("task.buffer").set_buf_lines(b, t) end
-local function refresh_buf(b)      require("task.buffer").refresh_buf(b) end
+local function detect_project()    return require("taskwarrior.projects").detect() end
+local function get_tw_completions() return require("taskwarrior.completion").get_tw_completions() end
+local function complete_filter(a)  return require("taskwarrior.completion").complete_filter(a) end
+local function set_buf_lines(b, t) require("taskwarrior.buffer").set_buf_lines(b, t) end
+local function refresh_buf(b)      require("taskwarrior.buffer").refresh_buf(b) end
 
 function M._on_write(bufnr)
-  require("task.apply").on_write(bufnr, refresh_buf, M._do_apply)
+  require("taskwarrior.apply").on_write(bufnr, refresh_buf, M._do_apply)
 end
 
 function M._do_apply(bufnr, tmpfile, on_delete)
-  require("task.apply").do_apply_and_refresh(bufnr, tmpfile, on_delete, refresh_buf)
+  require("taskwarrior.apply").do_apply_and_refresh(bufnr, tmpfile, on_delete, refresh_buf)
 end
 
 M.get_taskmd_path = get_taskmd_path
 
 function M.open(filter_str)
   ensure_setup()
-  require("task.buffer").open_task_buf(filter_str, M._on_write, detect_project)
+  require("taskwarrior.buffer").open_task_buf(filter_str, M._on_write, detect_project)
 end
 
 function M.filter(filter_str)
   local bufnr = vim.api.nvim_get_current_buf()
   if not vim.b[bufnr].task_filter then
-    vim.notify("task.nvim: not in a task buffer", vim.log.levels.WARN)
+    vim.notify("taskwarrior.nvim: not in a task buffer", vim.log.levels.WARN)
     return
   end
   vim.b[bufnr].task_filter = filter_str or ""
@@ -60,7 +60,7 @@ end
 function M.refresh()
   local bufnr = vim.api.nvim_get_current_buf()
   if not vim.b[bufnr].task_filter then
-    vim.notify("task.nvim: not in a task buffer", vim.log.levels.WARN)
+    vim.notify("taskwarrior.nvim: not in a task buffer", vim.log.levels.WARN)
     return
   end
   refresh_buf(bufnr)
@@ -68,13 +68,13 @@ end
 
 function M.undo()
   local bufnr = vim.api.nvim_get_current_buf()
-  require("task.apply").undo(bufnr, refresh_buf)
+  require("taskwarrior.apply").undo(bufnr, refresh_buf)
 end
 
 function M.sort(sort_spec)
   local bufnr = vim.api.nvim_get_current_buf()
   if vim.b[bufnr].task_filter == nil then
-    vim.notify("task.nvim: not in a task buffer", vim.log.levels.WARN)
+    vim.notify("taskwarrior.nvim: not in a task buffer", vim.log.levels.WARN)
     return
   end
   vim.b[bufnr].task_sort = sort_spec or "urgency-"
@@ -84,7 +84,7 @@ end
 function M.group(group_field)
   local bufnr = vim.api.nvim_get_current_buf()
   if vim.b[bufnr].task_filter == nil then
-    vim.notify("task.nvim: not in a task buffer", vim.log.levels.WARN)
+    vim.notify("taskwarrior.nvim: not in a task buffer", vim.log.levels.WARN)
     return
   end
   vim.b[bufnr].task_group = (group_field and group_field ~= "none" and group_field ~= "") and group_field or nil
@@ -92,33 +92,33 @@ function M.group(group_field)
 end
 
 function M.project_add(name)
-  require("task.projects").add(name)
+  require("taskwarrior.projects").add(name)
 end
 
 function M.project_remove()
-  require("task.projects").remove()
+  require("taskwarrior.projects").remove()
 end
 
 function M.project_list()
-  require("task.projects").list()
+  require("taskwarrior.projects").list()
 end
 
 M.detect_project = detect_project
 
 function M.delegate()
-  return require("task.delegate").delegate_one()
+  return require("taskwarrior.delegate").delegate_one()
 end
 
 function M.delegate_collect(range)
-  return require("task.delegate").collect(range)
+  return require("taskwarrior.delegate").collect(range)
 end
 
 function M.delegate_copy(mode, opts)
-  return require("task.delegate").copy(mode, opts)
+  return require("taskwarrior.delegate").copy(mode, opts)
 end
 
 function M.delegate_open_popup(opts)
-  return require("task.delegate").open_popup(opts)
+  return require("taskwarrior.delegate").open_popup(opts)
 end
 
 function M.start_stop(which)
@@ -126,42 +126,42 @@ function M.start_stop(which)
   local line = vim.api.nvim_get_current_line()
   local short_uuid = uuid_from_line(line)
   if not short_uuid then
-    vim.notify("task.nvim: no UUID on this line", vim.log.levels.WARN)
+    vim.notify("taskwarrior.nvim: no UUID on this line", vim.log.levels.WARN)
     return
   end
   local cmd = string.format("task rc.bulk=0 rc.confirmation=off %s %s", short_uuid, which)
   local _, ok = run(cmd)
   if ok then
-    vim.notify(string.format("task.nvim: %s %s", which, short_uuid))
+    vim.notify(string.format("taskwarrior.nvim: %s %s", which, short_uuid))
     if vim.b[bufnr].task_filter ~= nil then refresh_buf(bufnr) end
   else
-    vim.notify(string.format("task.nvim: %s failed", which), vim.log.levels.ERROR)
+    vim.notify(string.format("taskwarrior.nvim: %s failed", which), vim.log.levels.ERROR)
   end
 end
 
 function M.view_list_names()
-  return require("task.saved_views").list_names()
+  return require("taskwarrior.saved_views").list_names()
 end
 
 function M.view_save(name)
-  require("task.saved_views").save(name)
+  require("taskwarrior.saved_views").save(name)
 end
 
 function M.view_load(name)
-  require("task.saved_views").load(name, M.open, refresh_buf)
+  require("taskwarrior.saved_views").load(name, M.open, refresh_buf)
 end
 
 function M.review()
-  require("task.review").run(M.open)
+  require("taskwarrior.review").run(M.open)
 end
 
 function M.help()
-  require("task.help").show(set_buf_lines)
+  require("taskwarrior.help").show(set_buf_lines)
 end
 
 function M.capture()
   ensure_setup()
-  require("task.capture").open(function()
+  require("taskwarrior.capture").open(function()
     for _, b in ipairs(vim.api.nvim_list_bufs()) do
       if vim.b[b].task_filter ~= nil and vim.api.nvim_buf_is_valid(b) then
         refresh_buf(b)
@@ -171,13 +171,13 @@ function M.capture()
 end
 
 -- Omnifunc bridge — capture buffer sets omnifunc to a v:lua expression that
--- needs this method on the top-level require("task") module.
+-- needs this method on the top-level require("taskwarrior") module.
 function M._capture_omnifunc(findstart, base)
-  return require("task.capture").omnifunc(findstart, base)
+  return require("taskwarrior.capture").omnifunc(findstart, base)
 end
 
 function M._setup_commands()
-  require("task.commands").setup(M, complete_filter)
+  require("taskwarrior.commands").setup(M, complete_filter)
 end
 
 -- Completion callbacks (ArgLead, CmdLine, CursorPos) -> list of strings
@@ -240,20 +240,20 @@ M.api.refresh = function()
 end
 
 function M.setup(opts)
-  require("task.config").setup(opts)
+  require("taskwarrior.config").setup(opts)
 
-  local config = require("task.config")
+  local config = require("taskwarrior.config")
   local gopts = { noremap = true, silent = true }
 
   -- Global keymaps
   if config.options.capture_key then
     vim.keymap.set("n", config.options.capture_key, M.capture,
-      vim.tbl_extend("force", gopts, { desc = "task.nvim: Quick-capture task" }))
+      vim.tbl_extend("force", gopts, { desc = "taskwarrior.nvim: Quick-capture task" }))
   end
 
   if config.options.open_key then
     vim.keymap.set("n", config.options.open_key, function() M.open() end,
-      vim.tbl_extend("force", gopts, { desc = "task.nvim: Open tasks" }))
+      vim.tbl_extend("force", gopts, { desc = "taskwarrior.nvim: Open tasks" }))
   end
 
   if config.options.project_add_key then
@@ -264,7 +264,7 @@ function M.setup(opts)
       }, function(name)
         if name and name ~= "" then M.project_add(name) end
       end)
-    end, vim.tbl_extend("force", gopts, { desc = "task.nvim: Register cwd as project" }))
+    end, vim.tbl_extend("force", gopts, { desc = "taskwarrior.nvim: Register cwd as project" }))
   end
 
   M._setup_commands()

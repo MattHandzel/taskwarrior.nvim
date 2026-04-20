@@ -1,4 +1,4 @@
---- task.nvim setup-option validation.
+--- taskwarrior.nvim setup-option validation.
 --- Raises a Lua error (level 0 = no location prefix) on the first problem found.
 
 local M = {}
@@ -109,7 +109,7 @@ local function check_unknown_keys(tbl, known, prefix)
 		if not found then
 			local hint = suggest(k, known)
 			local key_path = prefix and (prefix .. "." .. k) or k
-			local msg = ("task.nvim: unknown setup key '%s'"):format(key_path)
+			local msg = ("taskwarrior.nvim: unknown setup key '%s'"):format(key_path)
 			if hint then
 				msg = msg .. (" — did you mean '%s'?"):format(
 					prefix and (prefix .. "." .. hint) or hint
@@ -127,7 +127,7 @@ local function check_types(tbl, type_map, path_prefix)
 		if val ~= nil and type(val) ~= expected_type then
 			local key_path = path_prefix and (path_prefix .. "." .. key) or key
 			error(
-				("task.nvim: setup key '%s' must be a %s, got %s"):format(
+				("taskwarrior.nvim: setup key '%s' must be a %s, got %s"):format(
 					key_path, expected_type, type(val)
 				),
 				0
@@ -140,7 +140,7 @@ end
 -- Public
 -- ---------------------------------------------------------------------------
 
---- Validate opts passed to require('task').setup(opts).
+--- Validate opts passed to require('taskwarrior').setup(opts).
 --- Raises on the first validation failure with an actionable message.
 function M.validate(opts)
 	if opts == nil then return end
@@ -155,7 +155,7 @@ function M.validate(opts)
 	local fe = opts.feedback_endpoint
 	if fe ~= nil and fe ~= false and type(fe) ~= "string" then
 		error(
-			("task.nvim: setup key 'feedback_endpoint' must be false or a string, got %s"):format(
+			("taskwarrior.nvim: setup key 'feedback_endpoint' must be false or a string, got %s"):format(
 				type(fe)
 			),
 			0
@@ -173,7 +173,7 @@ function M.validate(opts)
 		for i, entry in ipairs(opts.filters) do
 			if type(entry) ~= "table" then
 				error(
-					("task.nvim: filters[%d] must be a table, got %s"):format(i, type(entry)),
+					("taskwarrior.nvim: filters[%d] must be a table, got %s"):format(i, type(entry)),
 					0
 				)
 			end
@@ -185,7 +185,7 @@ function M.validate(opts)
 		for path, proj in pairs(opts.projects) do
 			if type(proj) ~= "string" then
 				error(
-					("task.nvim: projects['%s'] must be a string, got %s"):format(
+					("taskwarrior.nvim: projects['%s'] must be a string, got %s"):format(
 						tostring(path), type(proj)
 					),
 					0
@@ -199,7 +199,7 @@ function M.validate(opts)
 		for field, coeff in pairs(opts.urgency_coefficients) do
 			if type(coeff) ~= "number" then
 				error(
-					("task.nvim: urgency_coefficients['%s'] must be a number, got %s"):format(
+					("taskwarrior.nvim: urgency_coefficients['%s'] must be a number, got %s"):format(
 						tostring(field), type(coeff)
 					),
 					0
@@ -213,7 +213,7 @@ function M.validate(opts)
 		for field, fn in pairs(opts.urgency_value_mappers) do
 			if type(fn) ~= "function" then
 				error(
-					("task.nvim: urgency_value_mappers['%s'] must be a function, got %s"):format(
+					("taskwarrior.nvim: urgency_value_mappers['%s'] must be a function, got %s"):format(
 						tostring(field), type(fn)
 					),
 					0

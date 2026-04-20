@@ -1,16 +1,61 @@
 # Changelog
 
-All notable changes to task.nvim are documented here. Format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project
-follows [Semantic Versioning](https://semver.org/) once tagged.
+All notable changes to taskwarrior.nvim (formerly `task.nvim`) are documented
+here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
+this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+
+## [1.3.0] - 2026-04-19
+
+Renamed the plugin from `task.nvim` to `taskwarrior.nvim` and tightened a
+few user-facing surfaces in the process. Functional behaviour is identical
+to v1.2.0; this release exists to reduce ambiguity when users discover the
+plugin via the `taskwarrior` keyword.
+
+### Changed
+- **Repository rename.** `MattHandzel/task.nvim` → `MattHandzel/taskwarrior.nvim`.
+  Update your plugin spec.
+- **Lua module path.** `require("task")` → `require("taskwarrior")` (and
+  the same for every submodule: `taskwarrior.config`, `taskwarrior.taskmd`, …).
+- **Vim doc tag.** `:help task.nvim` → `:help taskwarrior.nvim`. Section
+  tags renamed from `task-*` to `taskwarrior-*` (`taskwarrior-config`,
+  `taskwarrior-views`, …).
+- **Health check.** `:checkhealth task` → `:checkhealth taskwarrior`.
+  The Python check is now a `warn` (informational), not an `error` — the
+  default backend is pure Lua, so Python is genuinely optional.
+- **Plugin data dir.** `stdpath("data")/task.nvim/` → `…/taskwarrior.nvim/`.
+  Saved views and apply backups migrate automatically on first use.
+- **Projects file.** `stdpath("data")/task_nvim_projects.json` →
+  `…/taskwarrior_nvim_projects.json`. Migrates automatically.
+- **User autocmd events / namespaces / augroups** renamed from `TaskNvim*`
+  / `task_nvim_*` to `Taskwarrior*` / `taskwarrior_*`.
+
+### Unchanged (intentionally)
+- `:Task*` user commands and the `taskmd` filetype.
+- `bin/taskmd` CLI (still stdlib-only Python, still named `taskmd`).
+- The Telescope extension is still registered as `task` (so
+  `:Telescope task tasks` keeps working — the extension name is independent
+  of the module path).
+
+### Migration
+- One-line lazy.nvim spec update: change `"matthandzel/task.nvim"` to
+  `"matthandzel/taskwarrior.nvim"` and replace `require("task")` calls in
+  the `config = function() … end` block.
+- All persisted state is migrated transparently.
+- If you depended on the old `TaskNvimRefresh` User autocmd pattern (or the
+  `task_nvim_hl` / `task_views_hl` namespaces) for custom integrations,
+  update to the new `Taskwarrior*` / `taskwarrior_*` names.
 
 ## [1.2.0] - 2026-04-17
 
 Big release: splits the 2300-line `init.lua` monolith into focused
 modules, adds the first real Lua test suite, introduces data-safety
 defaults, and fixes a handful of user-reported bugs.
+
+> Released as `task.nvim` v1.2.0. Paths below reflect the layout at that
+> tag; in v1.3.0 the plugin was renamed to `taskwarrior.nvim` and the lua
+> directory moved to `lua/taskwarrior/`.
 
 ### Added
 - **Modular architecture.** `lua/task/init.lua` is now 273 lines (down
@@ -39,7 +84,7 @@ defaults, and fixes a handful of user-reported bugs.
 - **Lint configuration.** `stylua.toml`, `pyproject.toml` (ruff),
   `.editorconfig`. CI lint job runs advisory checks.
 - **CI matrix.** Ubuntu + macOS × Python 3.8 / 3.10 / 3.12; added
-  help-tag smoke verifying `doc/task.txt`.
+  help-tag smoke verifying `doc/task.txt` (now `doc/taskwarrior.txt`).
 
 ### Changed
 - **`delegate.flags` default is now `""`** (was
@@ -97,9 +142,11 @@ defaults, and fixes a handful of user-reported bugs.
 
 ## [1.0.0] - 2026-03-22
 
+> Released as `task.nvim` v1.0.0.
+
 ### Added
 - Initial public release. `:Task`, `:TaskFilter`, `:TaskSort`, `:TaskGroup`,
   `:TaskRefresh`, `:TaskAdd`, `:TaskUndo`, `:TaskHelp`.
 - `bin/taskmd` CLI (Python, stdlib only).
-- `:checkhealth task`.
+- `:checkhealth task` (renamed to `:checkhealth taskwarrior` in v1.3.0).
 - Demo GIF, README, MIT license.

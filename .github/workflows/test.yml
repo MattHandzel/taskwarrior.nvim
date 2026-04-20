@@ -45,10 +45,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y neovim
           nvim --version | head -1
-      - name: Verify all Lua modules load and :help task loads
+      - name: Verify all Lua modules load and :help taskwarrior loads
         run: |
           nvim --headless -u NONE --cmd "set rtp+=." -c "lua
-            local mods = {'task','task.config','task.taskmd','task.views','task.diff_preview','task.feedback','task.cmp','task.statusline','task.health'}
+            local mods = {'taskwarrior','taskwarrior.config','taskwarrior.taskmd','taskwarrior.views','taskwarrior.diff_preview','taskwarrior.feedback','taskwarrior.cmp','taskwarrior.statusline','taskwarrior.health'}
             local failed = 0
             for _, m in ipairs(mods) do
               local ok, err = pcall(require, m)
@@ -57,17 +57,17 @@ jobs:
                 io.stderr:write('FAIL ' .. m .. ': ' .. tostring(err) .. '\n')
               end
             end
-            -- Verify doc/task.txt parses as a valid help file (tags present).
-            local doc = io.open('doc/task.txt', 'r')
+            -- Verify doc/taskwarrior.txt parses as a valid help file (tags present).
+            local doc = io.open('doc/taskwarrior.txt', 'r')
             if not doc then
               failed = failed + 1
-              io.stderr:write('FAIL doc/task.txt missing\n')
+              io.stderr:write('FAIL doc/taskwarrior.txt missing\n')
             else
               local content = doc:read('*all')
               doc:close()
-              if not content:match('%*task%.nvim%*') then
+              if not content:match('%*taskwarrior%.nvim%*') then
                 failed = failed + 1
-                io.stderr:write('FAIL doc/task.txt has no *task.nvim* help tag\n')
+                io.stderr:write('FAIL doc/taskwarrior.txt has no *taskwarrior.nvim* help tag\n')
               end
             end
             if failed > 0 then os.exit(1) end

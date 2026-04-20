@@ -46,14 +46,14 @@ M.defaults = {
 	-- Receives the full task table (from TW export). Return adjusted urgency.
 	-- When set, tasks are re-sorted by this value instead of TW urgency.
 	custom_urgency = nil,
-	-- Copy the Taskwarrior data directory to stdpath("data")/task.nvim/backups/
+	-- Copy the Taskwarrior data directory to stdpath("data")/taskwarrior.nvim/backups/
 	-- before any :w applies changes. Keeps the ten most recent backups and
 	-- prunes older ones. Safe to disable if your data directory is large and
 	-- you have an external backup strategy.
 	auto_backup = true,
 	auto_backup_keep = 10, -- number of recent backups to retain (>=1)
 	feedback_endpoint = false, -- set to "https://matthandzel.com/api/task-feedback" to enable
-	feedback_github_repo = "MattHandzel/task.nvim", -- for GitHub issue fallback
+	feedback_github_repo = "MattHandzel/taskwarrior.nvim", -- for GitHub issue fallback
 	-- :TaskDelegate — claude-code delegation defaults. Each field is overridable
 	-- per-invocation via the popup prompt.
 	delegate = {
@@ -72,7 +72,7 @@ M.defaults = {
 M.options = {}
 
 function M.setup(opts)
-	require("task.validate").validate(opts)
+	require("taskwarrior.validate").validate(opts)
 	M.options = vim.tbl_deep_extend("force", {}, M.defaults, opts or {})
 end
 

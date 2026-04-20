@@ -1,6 +1,6 @@
-# Contributing to task.nvim
+# Contributing to taskwarrior.nvim
 
-Thanks for wanting to help. task.nvim is small enough that the contribution
+Thanks for wanting to help. taskwarrior.nvim is small enough that the contribution
 loop is fast — usually a PR lands within a week if it's on-scope.
 
 ## What's in scope
@@ -33,11 +33,12 @@ If you're unsure, open an issue first and ask.
 ### Running tests
 
 ```bash
-python3 -m pytest tests/ -v
+python3 -m pytest tests/ -v          # 358 Python tests (CLI + diff contract)
+./tests/lua/bootstrap.sh             # 121+ Lua assertions (parser/render/config)
 ```
 
-Integration tests run against a temp `TASKDATA` and never touch your real
-tasks. If a test touches `~/.task`, that's a bug — please file it.
+Both suites run against a temp `TASKDATA` and never touch your real tasks.
+If a test touches `~/.task`, that's a bug — please file it.
 
 ### Lua module load check
 
@@ -45,7 +46,7 @@ CI runs:
 
 ```bash
 nvim --headless -u NONE --cmd "set rtp+=." \
-  -c "lua for _, m in ipairs({'task','task.config','task.taskmd','task.views','task.diff_preview','task.feedback','task.cmp','task.statusline','task.health'}) do assert(pcall(require, m), m) end; print('ok')" \
+  -c "lua for _, m in ipairs({'taskwarrior','taskwarrior.config','taskwarrior.taskmd','taskwarrior.views','taskwarrior.diff_preview','taskwarrior.feedback','taskwarrior.cmp','taskwarrior.statusline','taskwarrior.health'}) do assert(pcall(require, m), m) end; print('ok')" \
   -c "qa!"
 ```
 
@@ -74,13 +75,13 @@ assets. Install it with `git config core.hooksPath .githooks`.
 - Tests go in `tests/test_taskmd.py` or `tests/test_taskmd_extended.py` —
   every bug fix gets a regression test, no exceptions.
 
-### Lua (`lua/task/`)
+### Lua (`lua/taskwarrior/`)
 
 - Follow the existing style: snake_case, `local M = {}`/`return M`, no
   globals.
 - Don't hardcode field-specific semantics. Effort, priority coefficients,
   UDA interpretation must go through configurable mappers. See
-  `DEFAULT_URGENCY_VALUE_MAPPERS` in `lua/task/taskmd.lua` for the pattern.
+  `DEFAULT_URGENCY_VALUE_MAPPERS` in `lua/taskwarrior/taskmd.lua` for the pattern.
 - When shelling out, always include `rc.bulk=0 rc.confirmation=off` in the
   Taskwarrior invocation. Interactive prompts break headless usage.
 - Sanitize `\n` out of any string before `nvim_buf_set_lines` — vim treats
@@ -116,11 +117,12 @@ get implemented; "would it be cool if" requests tend to stall.
 
 ## Releasing (maintainer notes)
 
-1. Bump the `@version` line in `lua/task/init.lua` if/when we add one.
+1. Bump the `@version` line in `lua/taskwarrior/init.lua` if/when we add one.
 2. Update `CHANGELOG.md` with user-visible changes under a new `## [x.y.z]
    - YYYY-MM-DD` heading.
-3. Tag: `git tag -a v0.x.y -m "v0.x.y"` and push the tag.
-4. Create a GitHub release with the changelog section as the body.
+3. Tag: `git tag -a vX.Y.Z -m "vX.Y.Z"` and push the tag.
+4. Create a GitHub release with the changelog section as the body
+   (`gh release create vX.Y.Z --notes-file <(awk ...)`).
 
 ## Code of conduct
 

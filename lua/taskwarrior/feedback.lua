@@ -1,11 +1,11 @@
--- task/feedback.lua — :TaskFeedback command implementation
+-- taskwarrior/feedback.lua — :TaskFeedback command implementation
 local M = {}
 
 -- ---------------------------------------------------------------------------
 -- Constants
 -- ---------------------------------------------------------------------------
 
-local TEMPLATE = [[# task.nvim feedback
+local TEMPLATE = [[# taskwarrior.nvim feedback
 
 > Privacy: this report includes plugin version, neovim/taskwarrior versions,
 > OS, backend, task count, and a snapshot of safe config keys. It does NOT
@@ -221,7 +221,7 @@ end
 -- ---------------------------------------------------------------------------
 
 local function build_payload(report_sections)
-  local config = require("task.config")
+  local config = require("taskwarrior.config")
   local opts = config.options
 
   -- Collect config_summary from allow-list only
@@ -293,7 +293,7 @@ local function do_send(json_str, endpoint, buf)
           local ok, parsed = pcall(vim.fn.json_decode, raw)
           if ok and type(parsed) == "table" and parsed.id then
             vim.schedule(function()
-              vim.notify("task.nvim: feedback sent — id: " .. parsed.id)
+              vim.notify("taskwarrior.nvim: feedback sent — id: " .. parsed.id)
             end)
           end
         end
@@ -304,7 +304,7 @@ local function do_send(json_str, endpoint, buf)
             pcall(vim.cmd, "bwipeout! " .. buf)
           else
             vim.notify(
-              "task.nvim: send failed (exit " .. code .. ")",
+              "taskwarrior.nvim: send failed (exit " .. code .. ")",
               vim.log.levels.ERROR
             )
           end
@@ -369,14 +369,14 @@ end
 -- ---------------------------------------------------------------------------
 
 local function handle_save(buf)
-  local config = require("task.config")
+  local config = require("taskwarrior.config")
   local endpoint = config.options.feedback_endpoint
   local github_repo = config.options.feedback_github_repo
 
   -- Endpoint disabled check
   if endpoint == false then
     vim.notify(
-      "task.nvim: feedback is disabled (feedback_endpoint = false in config)",
+      "taskwarrior.nvim: feedback is disabled (feedback_endpoint = false in config)",
       vim.log.levels.WARN
     )
     return
@@ -386,7 +386,7 @@ local function handle_save(buf)
   local sections = parse_buffer(buf)
 
   if sections.what_happened == "" then
-    vim.notify("task.nvim: 'What happened?' is required", vim.log.levels.WARN)
+    vim.notify("taskwarrior.nvim: 'What happened?' is required", vim.log.levels.WARN)
     return
   end
 
@@ -398,17 +398,17 @@ local function handle_save(buf)
   -- Offer choices
   local choices = { "Send", "Copy payload to clipboard", "Open as GitHub issue", "Cancel" }
   vim.ui.select(choices, {
-    prompt = "task.nvim feedback — review payload:\n\n" .. json_display .. "\n\nAction?",
+    prompt = "taskwarrior.nvim feedback — review payload:\n\n" .. json_display .. "\n\nAction?",
   }, function(choice)
     if not choice or choice == "Cancel" then
-      vim.notify("task.nvim: cancelled")
+      vim.notify("taskwarrior.nvim: cancelled")
       return
     end
 
     if choice == "Send" then
       if not endpoint then
         vim.notify(
-          "task.nvim: no feedback_endpoint configured; use 'Copy payload to clipboard' or 'Open as GitHub issue'",
+          "taskwarrior.nvim: no feedback_endpoint configured; use 'Copy payload to clipboard' or 'Open as GitHub issue'",
           vim.log.levels.WARN
         )
         return
@@ -418,11 +418,11 @@ local function handle_save(buf)
     elseif choice == "Copy payload to clipboard" then
       vim.fn.setreg("+", json_display)
       vim.fn.setreg('"', json_display)
-      vim.notify("task.nvim: payload copied to clipboard")
+      vim.notify("taskwarrior.nvim: payload copied to clipboard")
 
     elseif choice == "Open as GitHub issue" then
       if not github_repo then
-        vim.notify("task.nvim: no feedback_github_repo configured", vim.log.levels.WARN)
+        vim.notify("taskwarrior.nvim: no feedback_github_repo configured", vim.log.levels.WARN)
         return
       end
       open_github_issue(payload, github_repo)
@@ -435,12 +435,12 @@ end
 -- ---------------------------------------------------------------------------
 
 function M.open()
-  local config = require("task.config")
+  local config = require("taskwarrior.config")
 
   -- Respect disabled endpoint
   if config.options.feedback_endpoint == false then
     vim.notify(
-      "task.nvim: feedback is disabled (feedback_endpoint = false in config)",
+      "taskwarrior.nvim: feedback is disabled (feedback_endpoint = false in config)",
       vim.log.levels.WARN
     )
     return
@@ -456,7 +456,7 @@ function M.open()
   vim.bo[buf].swapfile = false
 
   -- Name the buffer (handle pre-existing stale buffer with same name)
-  local bname = "[task.nvim Feedback]"
+  local bname = "[taskwarrior.nvim Feedback]"
   local ok = pcall(vim.api.nvim_buf_set_name, buf, bname)
   if not ok then
     local stale = vim.fn.bufnr(bname)

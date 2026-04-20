@@ -1,4 +1,4 @@
--- config_spec.lua — tests for require('task.config').setup({...}).
+-- config_spec.lua — tests for require('taskwarrior.config').setup({...}).
 --
 -- Covers:
 --   • setup() stores merged options in M.options
@@ -10,7 +10,7 @@
 --   • Extra/unknown keys passed to setup() are preserved as-is
 --   • M.defaults is never mutated by setup() calls
 
-local config = require("task.config")
+local config = require("taskwarrior.config")
 
 -- Helper: deep-clone a table so we can detect mutations to M.defaults
 local function deep_copy(t)
@@ -20,7 +20,7 @@ local function deep_copy(t)
   return out
 end
 
-describe("task.config", function()
+describe("taskwarrior.config", function()
 
   -- Snapshot of defaults before any tests run
   local defaults_snapshot

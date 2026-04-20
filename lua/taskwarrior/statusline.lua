@@ -1,10 +1,10 @@
--- Statusline component for task.nvim.
+-- Statusline component for taskwarrior.nvim.
 -- Usage (lualine):
 --   require("lualine").setup({ sections = { lualine_x = {
---     require("task.statusline").component
+--     require("taskwarrior.statusline").component
 --   } } })
 -- Or raw:
---   vim.o.statusline = '%!v:lua.require("task.statusline").render()'
+--   vim.o.statusline = '%!v:lua.require("taskwarrior.statusline").render()'
 
 local M = {}
 

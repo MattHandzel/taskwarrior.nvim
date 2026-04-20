@@ -1,8 +1,11 @@
 local M = {}
 
 local HELP_TEXT = [[
-task.nvim — Taskwarrior as Markdown
-====================================
+taskwarrior.nvim — Edit Taskwarrior tasks as markdown
+=====================================================
+
+For the full reference, see `:help taskwarrior.nvim`.
+For environment diagnostics, run `:checkhealth taskwarrior`.
 
 COMMANDS
   :Task [filter...]       Open tasks matching filter (default: status:pending)
@@ -25,8 +28,9 @@ COMMANDS
   :TaskSave [name]        Save current filter+sort+group as a named view
   :TaskLoad [name]        Load a saved view (tab-completes names)
   :TaskReview             Walk through pending tasks one by one
-  :TaskDiffPreview [on|off]  Toggle live virtual-text diff preview
-  :TaskFeedback              Send structured feedback (bug report / feature request)
+  :TaskDiffPreview [on|off|toggle]  Toggle live virtual-text diff preview
+  :TaskFeedback              Open a structured feedback buffer (POSTs JSON or
+                             prefills a GitHub issue — opt-in via setup())
 
 GLOBAL KEYBINDINGS (always available)
   <leader>tt   Open task buffer (auto-filters by project if cwd is registered)
@@ -93,11 +97,11 @@ FEATURES
   - Cursor clamped before UUID comment (configurable)
 
 LUA API
-  require("task").api.export(filter)       Export tasks as Lua table
-  require("task").api.get_task_on_cursor() Get task under cursor
-  require("task").api.detect_project()     Get project for cwd
-  require("task").api.get_completions()    Get projects, tags, fields
-  require("task").api.refresh()            Refresh all task buffers
+  require("taskwarrior").api.export(filter)       Export tasks as Lua table
+  require("taskwarrior").api.get_task_on_cursor() Get task under cursor
+  require("taskwarrior").api.detect_project()     Get project for cwd
+  require("taskwarrior").api.get_completions()    Get projects, tags, fields
+  require("taskwarrior").api.refresh()            Refresh all task buffers
 
 FILTER EXAMPLES
   :Task +finance                    Tasks tagged +finance
@@ -115,12 +119,12 @@ function M.show(set_buf_lines_fn)
   vim.bo[help_buf].modifiable = false
   vim.cmd("split")
   vim.api.nvim_win_set_buf(0, help_buf)
-  local ok = pcall(vim.api.nvim_buf_set_name, help_buf, "task.nvim Help")
+  local ok = pcall(vim.api.nvim_buf_set_name, help_buf, "taskwarrior.nvim Help")
   if not ok then
-    local stale = vim.fn.bufnr("task.nvim Help")
+    local stale = vim.fn.bufnr("taskwarrior.nvim Help")
     if stale ~= -1 and stale ~= help_buf then
       pcall(vim.api.nvim_buf_delete, stale, { force = true })
-      pcall(vim.api.nvim_buf_set_name, help_buf, "task.nvim Help")
+      pcall(vim.api.nvim_buf_set_name, help_buf, "taskwarrior.nvim Help")
     end
   end
 end

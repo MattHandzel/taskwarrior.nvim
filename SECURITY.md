@@ -15,7 +15,7 @@ coordinated — the goal is to land a fix before the details are published.
 
 ## Scope
 
-task.nvim shells out to `task`, `claude`, and (optionally) `python3` via
+taskwarrior.nvim shells out to `task`, `claude`, and (optionally) `python3` via
 `vim.fn.system` with `shellescape`-quoted arguments. High-interest areas:
 
 - Any path where user-supplied text reaches a shell invocation without
@@ -31,7 +31,7 @@ task.nvim shells out to `task`, `claude`, and (optionally) `python3` via
 
 ## Not in scope
 
-- Taskwarrior's own security model. task.nvim trusts `task` to be
+- Taskwarrior's own security model. taskwarrior.nvim trusts `task` to be
   well-behaved with respect to its data directory.
-- Third-party plugins that integrate with task.nvim (telescope, cmp, your
+- Third-party plugins that integrate with taskwarrior.nvim (telescope, cmp, your
   statusline).

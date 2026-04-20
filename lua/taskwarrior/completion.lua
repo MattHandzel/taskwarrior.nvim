@@ -1,7 +1,7 @@
 local M = {}
 
 local function get_taskmd_path()
-  local config = require("task.config")
+  local config = require("taskwarrior.config")
   if config.options.taskmd_path then
     return config.options.taskmd_path
   end
@@ -17,9 +17,9 @@ local function run(cmd)
 end
 
 function M.get_tw_completions()
-  local config = require("task.config")
+  local config = require("taskwarrior.config")
   if config.options.backend ~= "python" then
-    local ok_m, tm = pcall(require, "task.taskmd")
+    local ok_m, tm = pcall(require, "taskwarrior.taskmd")
     if ok_m then
       local ok_c, data = pcall(tm.tw_completions)
       if ok_c and type(data) == "table" then return data end

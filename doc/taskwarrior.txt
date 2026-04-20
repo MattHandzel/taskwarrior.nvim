@@ -1,30 +1,30 @@
-*task.txt*       Edit your Taskwarrior tasks as markdown       *task.nvim*
+*taskwarrior.txt*       Edit your Taskwarrior tasks as markdown       *taskwarrior.nvim*
 
 ==============================================================================
-CONTENTS                                                    *task-contents*
+CONTENTS                                                    *taskwarrior-contents*
 
-    1. Introduction ........................ |task-intro|
-    2. Requirements ........................ |task-requirements|
-    3. Installation ........................ |task-installation|
-    4. Quick start ......................... |task-quickstart|
-    5. Commands ............................ |task-commands|
-    6. Keybindings ......................... |task-keybindings|
-    7. Syntax .............................. |task-syntax|
-    8. Configuration ....................... |task-config|
-    9. Views ............................... |task-views|
-    10. Saved views ........................ |task-saved-views|
-    11. Project auto-filter ................ |task-projects|
-    12. Delegation ......................... |task-delegate|
-    13. Health check ....................... |task-health|
-    14. Data safety ........................ |task-safety|
-    15. CLI ................................ |task-cli|
-    16. Troubleshooting .................... |task-troubleshooting|
-    17. License ............................ |task-license|
+    1. Introduction ........................ |taskwarrior-intro|
+    2. Requirements ........................ |taskwarrior-requirements|
+    3. Installation ........................ |taskwarrior-installation|
+    4. Quick start ......................... |taskwarrior-quickstart|
+    5. Commands ............................ |taskwarrior-commands|
+    6. Keybindings ......................... |taskwarrior-keybindings|
+    7. Syntax .............................. |taskwarrior-syntax|
+    8. Configuration ....................... |taskwarrior-config|
+    9. Views ............................... |taskwarrior-views|
+    10. Saved views ........................ |taskwarrior-saved-views|
+    11. Project auto-filter ................ |taskwarrior-projects|
+    12. Delegation ......................... |taskwarrior-delegate|
+    13. Health check ....................... |taskwarrior-health|
+    14. Data safety ........................ |taskwarrior-safety|
+    15. CLI ................................ |taskwarrior-cli|
+    16. Troubleshooting .................... |taskwarrior-troubleshooting|
+    17. License ............................ |taskwarrior-license|
 
 ==============================================================================
-1. INTRODUCTION                                                *task-intro*
+1. INTRODUCTION                                                *taskwarrior-intro*
 
-task.nvim turns the output of `task export` into a markdown buffer, lets you
+taskwarrior.nvim turns the output of `task export` into a markdown buffer, lets you
 edit it with any vim motion, and reconciles the diff back into Taskwarrior
 on `:w`. Inspired by oil.nvim.
 
@@ -32,7 +32,7 @@ The on-disk representation is never persisted: each buffer is a virtual
 scratch view of the live Taskwarrior database.
 
 ==============================================================================
-2. REQUIREMENTS                                         *task-requirements*
+2. REQUIREMENTS                                         *taskwarrior-requirements*
 
     - Neovim >= 0.9
     - Taskwarrior >= 2.6 (3.x supported)
@@ -40,23 +40,32 @@ scratch view of the live Taskwarrior database.
       the live diff-preview virtual text. The default backend is pure Lua.)
 
 ==============================================================================
-3. INSTALLATION                                        *task-installation*
+3. INSTALLATION                                        *taskwarrior-installation*
 
 With lazy.nvim: >
 
     {
-      "MattHandzel/task.nvim",
-      config = function() require("task").setup({}) end,
+      "MattHandzel/taskwarrior.nvim",
+      config = function() require("taskwarrior").setup({}) end,
     }
 <
 With packer.nvim: >
 
-    use { "MattHandzel/task.nvim",
-          config = function() require("task").setup({}) end }
+    use { "MattHandzel/taskwarrior.nvim",
+          config = function() require("taskwarrior").setup({}) end }
 <
+                                                       *taskwarrior-rename*
+Migrating from task.nvim ~
+
+This plugin was previously published as `MattHandzel/task.nvim`. If you
+were running v1.2.x or earlier, update your plugin spec to the new repo
+name and replace `require("task")` with `require("taskwarrior")` in your
+configuration. The `:Task*` commands and the `taskmd` filetype are
+unchanged. Saved views, registered project mappings, and apply backups
+are migrated automatically the first time the plugin loads.
 
 ==============================================================================
-4. QUICK START                                            *task-quickstart*
+4. QUICK START                                            *taskwarrior-quickstart*
 
     :Task                          open all pending tasks
     :Task project:career           filter
@@ -65,7 +74,7 @@ With packer.nvim: >
 Edit any line. `:w` to sync. That is the whole loop.
 
 ==============================================================================
-5. COMMANDS                                                *task-commands*
+5. COMMANDS                                                *taskwarrior-commands*
 
                                                                     *:Task*
 :Task [filter]          Open task buffer with optional filter.
@@ -112,7 +121,7 @@ Edit any line. `:w` to sync. That is the whole loop.
                         quit.
 
                                                             *:TaskDelegate*
-:TaskDelegate           Delegate task(s) to Claude. See |task-delegate|.
+:TaskDelegate           Delegate task(s) to Claude. See |taskwarrior-delegate|.
 
                                                          *:TaskDiffPreview*
 :TaskDiffPreview [on|off|toggle]
@@ -123,23 +132,23 @@ Edit any line. `:w` to sync. That is the whole loop.
                                                              *:TaskSummary*
                                                             *:TaskCalendar*
                                                                 *:TaskTags*
-Visualisation commands. See |task-views|.
+Visualisation commands. See |taskwarrior-views|.
 
                                                           *:TaskProjectAdd*
                                                        *:TaskProjectRemove*
                                                          *:TaskProjectList*
-:TaskProjectAdd [name]   Register cwd as a project (see |task-projects|).
+:TaskProjectAdd [name]   Register cwd as a project (see |taskwarrior-projects|).
 :TaskProjectRemove       Unregister cwd.
 :TaskProjectList         List all mappings.
 
                                                             *:TaskFeedback*
 :TaskFeedback           Open a structured feedback buffer. Opt-in; needs
-                        `feedback_endpoint` set in |task-config|.
+                        `feedback_endpoint` set in |taskwarrior-config|.
 
 ==============================================================================
-6. KEYBINDINGS                                          *task-keybindings*
+6. KEYBINDINGS                                          *taskwarrior-keybindings*
 
-Global (configurable; see |task-config|): ~
+Global (configurable; see |taskwarrior-config|): ~
     <leader>tt          Open task buffer.
     <leader>ta          Quick-capture.
     <leader>tpa         Register cwd as a project.
@@ -147,7 +156,7 @@ Global (configurable; see |task-config|): ~
 Buffer-local (inside a task buffer): ~
     <CR>                Cycle state: pending -> active -> done -> pending.
     o / O               New task line below / above.
-    dd                  Mark done (or delete, per |task-config|
+    dd                  Mark done (or delete, per |taskwarrior-config|
                         `on_delete`).
     yy + p              Duplicate a task.
     ga                  Annotate the task under the cursor.
@@ -158,7 +167,7 @@ Buffer-local (inside a task buffer): ~
     <leader>tg          Change grouping interactively.
 
 ==============================================================================
-7. SYNTAX                                                    *task-syntax*
+7. SYNTAX                                                    *taskwarrior-syntax*
 
 Tasks are rendered as GFM checkboxes with Taskwarrior-native metadata: >
 
@@ -176,11 +185,11 @@ editing. They travel with the line through any vim operation that preserves
 that line.
 
 ==============================================================================
-8. CONFIGURATION                                             *task-config*
+8. CONFIGURATION                                             *taskwarrior-config*
 
 Full schema with defaults: >
 
-    require("task").setup({
+    require("taskwarrior").setup({
       on_delete         = "done",     -- or "delete"
       confirm           = true,
       sort              = "urgency-",
@@ -203,14 +212,14 @@ Full schema with defaults: >
       animation         = true,
       clamp_cursor      = true,
       day_start_hour    = 4,
-      auto_backup       = true,       -- see |task-safety|
+      auto_backup       = true,       -- see |taskwarrior-safety|
       urgency_coefficients = {},
       urgency_value_mappers = nil,
       custom_urgency    = nil,
       feedback_endpoint = false,
       delegate = {
         command            = "claude",
-        flags              = "",      -- see |task-delegate|
+        flags              = "",      -- see |taskwarrior-delegate|
         system_prompt_file = nil,
         model              = nil,
         height             = 0.5,
@@ -218,10 +227,10 @@ Full schema with defaults: >
     })
 <
 
-See |task-safety| for auto_backup and |task-delegate| for delegate.flags.
+See |taskwarrior-safety| for auto_backup and |taskwarrior-delegate| for delegate.flags.
 
 ==============================================================================
-9. VIEWS                                                      *task-views*
+9. VIEWS                                                      *taskwarrior-views*
 
 :TaskBurndown       ASCII burndown — pending-task count by day.
 :TaskTree           Dependency tree of `depends:` relationships.
@@ -232,26 +241,26 @@ See |task-safety| for auto_backup and |task-delegate| for delegate.flags.
 All read from `task export` — no external charting tools.
 
 ==============================================================================
-10. SAVED VIEWS                                        *task-saved-views*
+10. SAVED VIEWS                                        *taskwarrior-saved-views*
 
 `:TaskSave <name>` persists the current filter+sort+group to >
 
-    stdpath("data")/task.nvim/saved-views.json
+    stdpath("data")/taskwarrior.nvim/saved-views.json
 <
 `:TaskLoad [name]` restores one. `:TaskLoad` without arguments shows a
 picker. Tab-completion on names.
 
 ==============================================================================
-11. PROJECT AUTO-FILTER                                   *task-projects*
+11. PROJECT AUTO-FILTER                                   *taskwarrior-projects*
 
 `:TaskProjectAdd career` (run inside `~/projects/career-dev/`) maps the
 current directory to `project:career`. Subsequent `:Task` with no filter,
 when invoked from inside that directory, auto-applies `project:career`.
 
-Persists to `stdpath("data")/task_nvim_projects.json`.
+Persists to `stdpath("data")/taskwarrior_nvim_projects.json`.
 
 ==============================================================================
-12. DELEGATION                                             *task-delegate*
+12. DELEGATION                                             *taskwarrior-delegate*
 
 `:TaskDelegate` opens a popup (context, flags, model, system-prompt-file)
 and runs the configured `delegate.command` in a visible bottom split.
@@ -263,7 +272,7 @@ Sub-commands: ~
     copy            Copy the assembled prompt to `+` register.
     copy-command    Copy the full shell invocation to `+` register.
 
-                                                    *task-delegate-flags*
+                                                    *taskwarrior-delegate-flags*
 The default `delegate.flags` is the empty string. For power users who want
 unattended invocations, set it explicitly in setup(): >
 
@@ -273,9 +282,9 @@ This flag is not the default because it skips tool-permission checks in
 Claude Code and shouldn't be invisible.
 
 ==============================================================================
-13. HEALTH CHECK                                            *task-health*
+13. HEALTH CHECK                                            *taskwarrior-health*
 
-Run `:checkhealth task` to verify:
+Run `:checkhealth taskwarrior` to verify:
 
     - Neovim version
     - Taskwarrior presence and version
@@ -284,31 +293,31 @@ Run `:checkhealth task` to verify:
     - Taskwarrior data directory
 
 ==============================================================================
-14. DATA SAFETY                                             *task-safety*
+14. DATA SAFETY                                             *taskwarrior-safety*
 
 `:w` issues real `task modify`, `task done`, `task add`, `task delete`
 commands. There is no staging; the buffer is the edit.
 
-                                                      *task-auto-backup*
-If `auto_backup = true` (default), task.nvim copies your Taskwarrior data
+                                                      *taskwarrior-auto-backup*
+If `auto_backup = true` (default), taskwarrior.nvim copies your Taskwarrior data
 directory to >
 
-    stdpath("data")/task.nvim/backups/<YYYY-MM-DD-HHMMSS>/
+    stdpath("data")/taskwarrior.nvim/backups/<YYYY-MM-DD-HHMMSS>/
 <
 immediately before applying any save. Backups are kept rolling — the ten
 newest are retained, older ones are pruned. Disable by setting
 `auto_backup = false`.
 
-task.nvim also refuses to apply a markdown file whose header line has been
+taskwarrior.nvim also refuses to apply a markdown file whose header line has been
 deleted or corrupted, unless the `taskmd` CLI is invoked with `--force`.
 This prevents the "silent delete every pending task" failure mode.
 
 You should additionally keep your Taskwarrior database under version
-control or a regular backup — task.nvim's backups are convenience, not a
+control or a regular backup — taskwarrior.nvim's backups are convenience, not a
 substitute for real backups.
 
 ==============================================================================
-15. CLI                                                        *task-cli*
+15. CLI                                                        *taskwarrior-cli*
 
 The bundled `bin/taskmd` script is usable standalone: >
 
@@ -322,13 +331,13 @@ Useful for piping rendered tasks through grep/fzf, or integrating with
 editors other than Neovim.
 
 ==============================================================================
-16. TROUBLESHOOTING                                 *task-troubleshooting*
+16. TROUBLESHOOTING                                 *taskwarrior-troubleshooting*
 
 Error "Not allowed to change text or change window" when submitting
 :TaskAdd with nvim-cmp installed ~
 
     Fixed in the current version. If it recurs, reload the plugin
-    (`:Lazy reload task.nvim`) and file a bug with the stack trace.
+    (`:Lazy reload taskwarrior.nvim`) and file a bug with the stack trace.
 
 Error "Invalid buffer id" after applying changes ~
 
@@ -343,11 +352,11 @@ Swap-file warnings when reopening a task buffer ~
 Completion popup doesn't appear ~
 
     :TaskAdd uses omnifunc. Press <C-x><C-o> manually; <Tab> is
-    pre-wired to trigger it. If nothing appears, run `:checkhealth task`
+    pre-wired to trigger it. If nothing appears, run `:checkhealth taskwarrior`
     to confirm Taskwarrior is reachable.
 
 ==============================================================================
-17. LICENSE                                                *task-license*
+17. LICENSE                                                *taskwarrior-license*
 
 MIT. See LICENSE for the full text.
 

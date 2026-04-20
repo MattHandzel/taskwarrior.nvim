@@ -1,8 +1,8 @@
--- nvim-cmp completion source for task.nvim.
+-- nvim-cmp completion source for taskwarrior.nvim.
 -- Usage:
---   require("cmp").register_source("task", require("task.cmp").new())
+--   require("cmp").register_source("task", require("taskwarrior.cmp").new())
 --
--- Triggers on these contexts inside task.nvim buffers (filetype=taskmd):
+-- Triggers on these contexts inside taskwarrior.nvim buffers (filetype=taskmd):
 --   - `project:` → completes registered project names
 --   - `+`        → completes known tag names
 --   - bare word  → completes field names (project:, priority:, due:, etc.)

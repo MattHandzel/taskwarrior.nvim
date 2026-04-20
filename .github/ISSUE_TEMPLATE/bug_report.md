@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Something broken in task.nvim
+about: Something broken in taskwarrior.nvim
 title: ""
 labels: bug
 assignees: ""
@@ -35,7 +35,7 @@ nvim session. If the bug depends on specific task data, include a
 - Other plugins touching insert-mode keymaps (cmp, copilot, codeium,
   supermaven, etc.):
 
-## `:checkhealth task`
+## `:checkhealth taskwarrior`
 
 <!-- Paste the output. -->
 
