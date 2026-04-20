@@ -47,6 +47,12 @@ plugin via the `taskwarrior` keyword.
   `task_nvim_hl` / `task_views_hl` namespaces) for custom integrations,
   update to the new `Taskwarrior*` / `taskwarrior_*` names.
 
+### Deprecation shim
+`require("task")` and `require("task.*")` keep working during the transition
+— `lua/task/` is now a shim directory that forwards to `lua/taskwarrior/`.
+A one-time deprecation notice is emitted the first time `require("task")`
+runs. Slated for removal in **v1.5**; please update your configs by then.
+
 ## [1.2.0] - 2026-04-17
 
 Big release: splits the 2300-line `init.lua` monolith into focused
