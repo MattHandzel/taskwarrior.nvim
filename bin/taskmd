@@ -529,17 +529,77 @@ def _normalize_base(
     return parsed
 
 
+def _parse_tw_modified(mod: str) -> datetime | None:
+    """Parse a Taskwarrior `modified` timestamp into a UTC-aware datetime.
+
+    TW emits either YYYYMMDDTHHMMSSZ (compact, the common case) or
+    YYYY-MM-DDTHH:MM:SS+00:00. Returns None on parse failure so callers can
+    fall back to "not externally touched".
+    """
+    if not mod:
+        return None
+    try:
+        mod_clean = re.sub(
+            r"^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z?$",
+            r"\1-\2-\3T\4:\5:\6+00:00",
+            mod,
+        )
+        return datetime.fromisoformat(mod_clean.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_rendered_at(rendered_at: str) -> datetime | None:
+    try:
+        ra = rendered_at
+        if not ra.endswith("Z") and "+" not in ra and "-" not in ra[10:]:
+            ra += "+00:00"
+        return datetime.fromisoformat(ra.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+
+
 def compute_diff(
     parsed_lines: list[dict],
     base_tasks: list[dict],
     on_delete: str = "done",
     extra_fields: tuple[str, ...] = (),
     omit_group_field: str | None = None,
-) -> list[dict]:
+    rendered_at: str | None = None,
+    force: bool = False,
+    return_conflicts: bool = False,
+):
+    """Compute mutations needed to bring Taskwarrior into agreement with the buffer.
+
+    External-change protection: when `rendered_at` is provided and `force` is False,
+    tasks whose `modified` timestamp is later than `rendered_at` are treated as
+    externally touched. Operations that would silently overwrite those changes
+    are suppressed and surfaced via the conflicts list.
+
+    Conflict types (see taskmd.lua:compute_diff docstring for full semantics):
+        external_modify — buffer AND TW diverged on the same task since render.
+        external_delete — buffer line carries a UUID that is no longer in base.
+        external_add    — task is in base (modified after render) and NOT in buffer.
+
+    Returns:
+        By default, a list of action dicts (backward compatible).
+        When `return_conflicts=True`, a (actions, conflicts) tuple.
+    """
     uuid_map: dict[str, dict] = {t["uuid"]: t for t in base_tasks if "uuid" in t}
     short_to_full: dict[str, str] = {v[:8]: v for v in uuid_map}
     seen: set[str] = set()
     actions: list[dict] = []
+    conflicts: list[dict] = []
+
+    rendered_dt: datetime | None = None
+    if rendered_at and not force:
+        rendered_dt = _parse_rendered_at(rendered_at)
+
+    def externally_touched(base: dict) -> bool:
+        if rendered_dt is None:
+            return False
+        mod_dt = _parse_tw_modified(base.get("modified", ""))
+        return mod_dt is not None and mod_dt > rendered_dt
 
     # Pre-compute normalized base for each task (what parse(serialize(base)) gives)
     normalized_bases: dict[str, dict] = {}
@@ -567,6 +627,8 @@ def compute_diff(
             task_fields = {k: v for k, v in line_task.items() if not k.startswith("_") and k != "status" and k != "description"}
             norm_fields = {k: v for k, v in norm.items() if not k.startswith("_") and k != "status" and k != "description"}
 
+            local_actions: list[dict] = []
+
             new_status = line_task.get("status", "pending")
             old_status = base.get("status", "pending")
             new_started = line_task.get("_started", False)
@@ -574,15 +636,15 @@ def compute_diff(
 
             if new_status == "completed" and old_status == "pending":
                 if old_started:
-                    actions.append({"type": "stop", "uuid": full_uuid, "fields": {}})
-                actions.append({"type": "done", "uuid": full_uuid, "fields": {}})
+                    local_actions.append({"type": "stop", "uuid": full_uuid, "fields": {}})
+                local_actions.append({"type": "done", "uuid": full_uuid, "fields": {}})
             elif new_status == "pending" and old_status == "completed":
-                actions.append({"type": "modify", "uuid": full_uuid, "fields": {"status": "pending"}})
+                local_actions.append({"type": "modify", "uuid": full_uuid, "fields": {"status": "pending"}})
             elif new_status == "pending" and old_status == "pending":
                 if new_started and not old_started:
-                    actions.append({"type": "start", "uuid": full_uuid, "fields": {}})
+                    local_actions.append({"type": "start", "uuid": full_uuid, "fields": {}})
                 elif not new_started and old_started:
-                    actions.append({"type": "stop", "uuid": full_uuid, "fields": {}})
+                    local_actions.append({"type": "stop", "uuid": full_uuid, "fields": {}})
 
             # Compare parsed user line against normalized base (round-tripped)
             changed: dict[str, Any] = {}
@@ -620,24 +682,53 @@ def compute_diff(
                 changed["description"] = user_desc
 
             if changed:
-                actions.append({"type": "modify", "uuid": full_uuid, "fields": changed})
+                local_actions.append({"type": "modify", "uuid": full_uuid, "fields": changed})
+
+            if local_actions and externally_touched(base):
+                conflicts.append({
+                    "type": "external_modify",
+                    "uuid": full_uuid,
+                    "description": base.get("description", ""),
+                    "would_have": local_actions,
+                })
+            else:
+                actions.extend(local_actions)
         else:
-            clean = {k: v for k, v in line_task.items() if not k.startswith("_") and k != "status" and k != "description"}
-            add_action: dict[str, Any] = {"type": "add", "description": line_task.get("description", ""), "fields": clean}
-            if line_task.get("_started"):
-                add_action["_post_start"] = True
-            if line_task.get("status") == "completed":
-                add_action["_post_done"] = True
-            actions.append(add_action)
+            if short and not force:
+                # Line references a UUID that no longer exists in base — externally
+                # deleted or filter-moved. Never resurrect as a new add.
+                conflicts.append({
+                    "type": "external_delete",
+                    "short_uuid": short,
+                    "description": line_task.get("description", ""),
+                })
+            else:
+                clean = {k: v for k, v in line_task.items() if not k.startswith("_") and k != "status" and k != "description"}
+                add_action: dict[str, Any] = {"type": "add", "description": line_task.get("description", ""), "fields": clean}
+                if line_task.get("_started"):
+                    add_action["_post_start"] = True
+                if line_task.get("status") == "completed":
+                    add_action["_post_done"] = True
+                actions.append(add_action)
 
     for full_uuid, base_task in uuid_map.items():
-        if full_uuid not in seen:
+        if full_uuid in seen:
+            continue
+        if externally_touched(base_task):
+            conflicts.append({
+                "type": "external_add",
+                "uuid": full_uuid,
+                "description": base_task.get("description", ""),
+            })
+        else:
             desc = base_task.get("description", "")
             if on_delete == "delete":
                 actions.append({"type": "delete", "uuid": full_uuid, "description": desc, "fields": {}})
             else:
                 actions.append({"type": "done", "uuid": full_uuid, "description": desc, "fields": {}})
 
+    if return_conflicts:
+        return actions, conflicts
     return actions
 
 
@@ -748,28 +839,16 @@ def cmd_apply(args: argparse.Namespace) -> None:
     deduped.extend(seen_parents.values())
     base_tasks = deduped
 
-    conflicts: list[str] = []
-    if not args.force and rendered_at:
-        try:
-            # Ensure rendered_at is always timezone-aware (UTC)
-            ra = rendered_at
-            if not ra.endswith("Z") and "+" not in ra and "-" not in ra[10:]:
-                ra += "+00:00"
-            rendered_dt = datetime.fromisoformat(ra.replace("Z", "+00:00"))
-            for task in base_tasks:
-                mod = task.get("modified", "")
-                if mod:
-                    mod_clean = re.sub(r"T(\d{6})Z$", lambda m: "T" + m.group(1)[:2] + ":" + m.group(1)[2:4] + ":" + m.group(1)[4:6] + "+00:00", mod)
-                    try:
-                        mod_dt = datetime.fromisoformat(mod_clean)
-                        if mod_dt > rendered_dt:
-                            conflicts.append(task.get("uuid", "unknown"))
-                    except ValueError:
-                        pass
-        except ValueError:
-            pass
-
-    diff = compute_diff(parsed_lines, base_tasks, on_delete=args.on_delete, extra_fields=extra_fields, omit_group_field=group_field)
+    diff, conflicts = compute_diff(
+        parsed_lines,
+        base_tasks,
+        on_delete=args.on_delete,
+        extra_fields=extra_fields,
+        omit_group_field=group_field,
+        rendered_at=rendered_at,
+        force=args.force,
+        return_conflicts=True,
+    )
 
     if args.dry_run:
         print(json.dumps({"actions": diff, "conflicts": conflicts}, indent=2))

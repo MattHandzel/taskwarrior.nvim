@@ -40,6 +40,15 @@ function M.list_names()
   return names
 end
 
+-- Internal: read-only fetch of a single view's {filter, sort, group} spec,
+-- or nil if no view by that name exists. Used by per-cwd auto-load so
+-- callers don't have to care where views are persisted.
+function M._get(name)
+  if not name or name == "" then return nil end
+  local data = read_saved_views()
+  return data[name]
+end
+
 function M.save(name)
   local bufnr = vim.api.nvim_get_current_buf()
   if vim.b[bufnr].task_filter == nil then

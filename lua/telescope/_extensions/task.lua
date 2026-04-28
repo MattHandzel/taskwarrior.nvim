@@ -99,6 +99,51 @@ local function picker(opts)
         actions.close(prompt_bufnr)
         vim.notify(string.format("taskwarrior.nvim: %s %s", cmd, selection.short))
       end)
+      -- <C-d>: delete (with confirmation)
+      map({ "i", "n" }, "<C-d>", function()
+        local selection = action_state.get_selected_entry()
+        if not selection or not selection.short then return end
+        actions.close(prompt_bufnr)
+        vim.ui.select({ "yes", "no" }, {
+          prompt = "Delete task " .. selection.short .. "?",
+        }, function(choice)
+          if choice ~= "yes" then return end
+          vim.fn.system(string.format(
+            "task rc.bulk=0 rc.confirmation=off %s delete", selection.short))
+          vim.notify("taskwarrior.nvim: deleted " .. selection.short)
+        end)
+      end)
+      -- <C-y>: yank UUID to unnamed register (and + if present)
+      map({ "i", "n" }, "<C-y>", function()
+        local selection = action_state.get_selected_entry()
+        if not selection or not selection.uuid then return end
+        vim.fn.setreg('"', selection.uuid)
+        pcall(vim.fn.setreg, "+", selection.uuid)
+        vim.notify("taskwarrior.nvim: yanked " .. selection.uuid)
+      end)
+      -- <C-a>: add a task from inside the picker (closes + opens quick-capture)
+      map({ "i", "n" }, "<C-a>", function()
+        actions.close(prompt_bufnr)
+        pcall(function() require("taskwarrior").capture() end)
+      end)
+      -- <C-c>: run a custom `task <uuid> <verb>` on the selection. Prompts for
+      -- the verb+args and shells out; ideal for one-off modifies or annotate.
+      map({ "i", "n" }, "<C-c>", function()
+        local selection = action_state.get_selected_entry()
+        if not selection or not selection.short then return end
+        local short = selection.short
+        actions.close(prompt_bufnr)
+        vim.ui.input({ prompt = "task " .. short .. " " }, function(verb)
+          if not verb or verb == "" then return end
+          local out = vim.fn.system(string.format(
+            "task rc.bulk=0 rc.confirmation=off %s %s", short, verb))
+          if vim.v.shell_error == 0 then
+            vim.notify("taskwarrior.nvim: " .. short .. " " .. verb)
+          else
+            vim.notify("taskwarrior.nvim: failed\n" .. out, vim.log.levels.ERROR)
+          end
+        end)
+      end)
       return true
     end,
   }):find()

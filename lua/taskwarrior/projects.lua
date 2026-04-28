@@ -32,18 +32,40 @@ local function save_projects(projects)
   f:close()
 end
 
+-- Detect returns the project NAME for the current cwd, or nil.
+-- Entries in the `projects` map may take either form:
+--   ["/path"] = "project_name"                       (legacy/simple)
+--   ["/path"] = { name = "...", view = "...",         (extended)
+--                 filter = "...", sort = "..." }
 function M.detect()
+  local entry = M.detect_entry()
+  if not entry then return nil end
+  return entry.name
+end
+
+-- Detect returns the full { name, view, filter, sort } entry for the current
+-- cwd, or nil. Legacy string values are normalized to { name = "..." }.
+function M.detect_entry()
   local config = require("taskwarrior.config")
   local cwd = vim.fn.getcwd()
   local saved = load_projects()
   local all = vim.tbl_extend("keep", config.options.projects or {}, saved)
 
-  for dir, name in pairs(all) do
-    -- Normalize: strip trailing slash for comparison
+  -- Prefer the longest-matching directory prefix so nested projects win over
+  -- their parents (e.g. /repos/big-project/subapp overrides /repos/big-project).
+  local best_dir, best_val, best_len = nil, nil, -1
+  for dir, val in pairs(all) do
     local d = dir:gsub("/$", "")
-    if cwd == d or cwd:sub(1, #d + 1) == d .. "/" then
-      return name
+    if (cwd == d or cwd:sub(1, #d + 1) == d .. "/") and #d > best_len then
+      best_dir, best_val, best_len = d, val, #d
     end
+  end
+  if not best_dir then return nil end
+  if type(best_val) == "string" then
+    return { name = best_val }
+  end
+  if type(best_val) == "table" then
+    return best_val
   end
   return nil
 end

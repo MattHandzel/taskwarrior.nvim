@@ -194,13 +194,25 @@ local function render_task_line(task, prefix)
     col = col + #due_s
   end
 
-  -- urgency score
+  -- urgency score — respects configurable urgency_colors breakpoints when
+  -- set; otherwise falls back to the historical 8/4 bands.
   local urg_s = ""
   if task.urgency then
     urg_s = string.format(" (%.1f)", task.urgency)
-    local hl = task.urgency >= 8 and "TaskViewUrgHigh"
-            or task.urgency >= 4 and "TaskViewUrgMed"
-            or "TaskViewUrgLow"
+    local config = require("taskwarrior.config")
+    local bands = config.options and config.options.urgency_colors
+    local hl
+    if bands and #bands > 0 then
+      local ok_b, buf_mod = pcall(require, "taskwarrior.buffer")
+      if ok_b and buf_mod.urgency_hl then
+        hl = buf_mod.urgency_hl(task.urgency)
+      end
+    end
+    if not hl then
+      hl = task.urgency >= 8 and "TaskViewUrgHigh"
+        or task.urgency >= 4 and "TaskViewUrgMed"
+        or "TaskViewUrgLow"
+    end
     table.insert(hls, { col, col + #urg_s, hl })
   end
 

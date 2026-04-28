@@ -177,19 +177,47 @@ local function run(argv)
   return out, vim.v.shell_error
 end
 
+-- Taskwarrior's built-in virtual tags. These are computed per-task (e.g.
+-- +ACTIVE for started tasks, +OVERDUE for tasks past due). They are NOT
+-- stored in the task's tag list — so rewriting `+ACTIVE` as
+-- `tags.has:ACTIVE` silently returns the empty set.
+--
+-- Source: `man task-sync` / `task ... virtual-tags`.
+local VIRTUAL_TAGS = {
+  ACTIVE = true, ANNOTATED = true, BLOCKED = true, BLOCKING = true,
+  CHILD = true, COMPLETED = true, DELETED = true, DUE = true,
+  DUETODAY = true, INSTANCE = true, LATEST = true, MONTH = true,
+  ORPHAN = true, OVERDUE = true, PARENT = true, PENDING = true,
+  PRIORITY = true, PROJECT = true, QUARTER = true, READY = true,
+  SCHEDULED = true, TAGGED = true, TEMPLATE = true, TODAY = true,
+  TOMORROW = true, UDA = true, UNBLOCKED = true, UNTIL = true,
+  WAITING = true, WEEK = true, YEAR = true, YESTERDAY = true,
+}
+
 -- Rewrite +tag → tags.has:tag and -tag → tags.hasnt:tag so TW3's expression
 -- parser doesn't misparse tags with hyphens.  E.g. +EXP-0011 gets split into
 -- (+EXP) minus (0011) by TW3; tags.has:EXP-0011 is unambiguous.
+--
+-- Virtual tags (ACTIVE, OVERDUE, etc.) are passed through verbatim because
+-- `tags.has:` only matches user-assigned tags, not virtual ones.
 local function normalize_tag_filters(args)
   local out = {}
   for _, arg in ipairs(args or {}) do
     local incl = arg:match("^%+([A-Za-z_][A-Za-z0-9_-]*)$")
     if incl then
-      out[#out + 1] = "tags.has:" .. incl
+      if VIRTUAL_TAGS[incl] then
+        out[#out + 1] = arg  -- keep `+ACTIVE` as-is
+      else
+        out[#out + 1] = "tags.has:" .. incl
+      end
     else
       local excl = arg:match("^%-([A-Za-z_][A-Za-z0-9_-]*)$")
       if excl then
-        out[#out + 1] = "tags.hasnt:" .. excl
+        if VIRTUAL_TAGS[excl] then
+          out[#out + 1] = arg  -- keep `-ACTIVE` as-is
+        else
+          out[#out + 1] = "tags.hasnt:" .. excl
+        end
       else
         out[#out + 1] = arg
       end
@@ -634,6 +662,26 @@ end
 -- Diff engine
 -- ---------------------------------------------------------------------------
 
+-- parse ISO timestamp into unix-seconds (UTC). Accepts
+-- YYYY-MM-DDTHH:MM:SS[Z|+00:00] or TW format YYYYMMDDTHHMMSSZ.
+-- Returns nil on failure. Shared by compute_diff (conflict detection) and
+-- M.apply, so declared before compute_diff.
+local function iso_to_unix(s)
+  if not s or s == "" then return nil end
+  local y, mo, d, h, mi, se = s:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)[Tt ](%d%d):(%d%d):(%d%d)")
+  if not y then
+    y, mo, d, h, mi, se = s:match("^(%d%d%d%d)(%d%d)(%d%d)T(%d%d)(%d%d)(%d%d)Z?$")
+  end
+  if not y then return nil end
+  local t = { year = tonumber(y), month = tonumber(mo), day = tonumber(d),
+              hour = tonumber(h), min = tonumber(mi), sec = tonumber(se),
+              isdst = false }
+  local local_time = os.time(t)
+  local utc_offset = os.difftime(os.time(), os.time(os.date("!*t", os.time())))
+  return local_time + utc_offset
+end
+M._iso_to_unix = iso_to_unix
+
 local function strip_private(task)
   local out = {}
   for k, v in pairs(task) do
@@ -674,11 +722,47 @@ function M._normalize_base(base, extra_fields, omit_group_field)
   return parsed
 end
 
+-- compute_diff(parsed_lines, base_tasks, opts) → actions, conflicts
+--
+-- opts:
+--   on_delete         "done" | "delete"
+--   extra_fields      list of UDA names present in the buffer
+--   omit_group_field  field being used as group (skip in diff)
+--   rendered_at       ISO-8601 string — timestamp the buffer was rendered at.
+--                     Enables external-change detection: any base task whose
+--                     `modified` is later than rendered_at was touched outside
+--                     the plugin and is treated carefully.
+--   force             bool. Skip all external-change protections (old behaviour).
+--
+-- Returns two values:
+--   actions    list of mutations to apply to Taskwarrior
+--   conflicts  list of { type, uuid|short_uuid, description, would_have? }
+--              describing skipped operations the caller should surface.
+--
+-- Conflict types:
+--   "external_modify"   buffer+TW diverged since render on the SAME task.
+--                       `would_have` holds the actions we would have emitted.
+--   "external_delete"   buffer line has a UUID that is not in `base_tasks`.
+--                       Task was deleted or filter-moved externally; we do NOT
+--                       resurrect it as a new add.
+--   "external_add"      base task exists, was modified after render, is NOT in
+--                       the buffer. Externally added or moved-into-filter; we
+--                       do NOT mark it done/delete.
 function M.compute_diff(parsed_lines, base_tasks, opts)
   opts = opts or {}
   local on_delete = opts.on_delete or "done"
   local extra_fields = opts.extra_fields or {}
   local omit_group_field = opts.omit_group_field
+  local force = opts.force == true
+  local ra_unix = (not force) and opts.rendered_at and iso_to_unix(opts.rendered_at) or nil
+
+  local function externally_touched(base_task)
+    if not ra_unix then return false end
+    local mod = base_task and base_task.modified
+    if not mod then return false end
+    local md = iso_to_unix(mod)
+    return md ~= nil and md > ra_unix
+  end
 
   local uuid_map = {}
   for _, t in ipairs(base_tasks) do
@@ -690,6 +774,7 @@ function M.compute_diff(parsed_lines, base_tasks, opts)
   end
   local seen = {}
   local actions = {}
+  local conflicts = {}
 
   local normalized = {}
   for uid, base in pairs(uuid_map) do
@@ -714,6 +799,8 @@ function M.compute_diff(parsed_lines, base_tasks, opts)
       local task_fields = strip_private(lt)
       local norm_fields = strip_private(norm)
 
+      local local_actions = {}
+
       local new_status = lt.status or "pending"
       local old_status = base.status or "pending"
       local new_started = lt._started and true or false
@@ -721,16 +808,16 @@ function M.compute_diff(parsed_lines, base_tasks, opts)
 
       if new_status == "completed" and old_status == "pending" then
         if old_started then
-          actions[#actions + 1] = { type = "stop", uuid = full_uuid, fields = {} }
+          local_actions[#local_actions + 1] = { type = "stop", uuid = full_uuid, fields = {} }
         end
-        actions[#actions + 1] = { type = "done", uuid = full_uuid, fields = {} }
+        local_actions[#local_actions + 1] = { type = "done", uuid = full_uuid, fields = {} }
       elseif new_status == "pending" and old_status == "completed" then
-        actions[#actions + 1] = { type = "modify", uuid = full_uuid, fields = { status = "pending" } }
+        local_actions[#local_actions + 1] = { type = "modify", uuid = full_uuid, fields = { status = "pending" } }
       elseif new_status == "pending" and old_status == "pending" then
         if new_started and not old_started then
-          actions[#actions + 1] = { type = "start", uuid = full_uuid, fields = {} }
+          local_actions[#local_actions + 1] = { type = "start", uuid = full_uuid, fields = {} }
         elseif not new_started and old_started then
-          actions[#actions + 1] = { type = "stop", uuid = full_uuid, fields = {} }
+          local_actions[#local_actions + 1] = { type = "stop", uuid = full_uuid, fields = {} }
         end
       end
 
@@ -778,30 +865,65 @@ function M.compute_diff(parsed_lines, base_tasks, opts)
       local has_changes = false
       for _ in pairs(changed) do has_changes = true; break end
       if has_changes then
-        actions[#actions + 1] = { type = "modify", uuid = full_uuid, fields = changed }
+        local_actions[#local_actions + 1] = { type = "modify", uuid = full_uuid, fields = changed }
+      end
+
+      if #local_actions > 0 and externally_touched(base) then
+        conflicts[#conflicts + 1] = {
+          type = "external_modify",
+          uuid = full_uuid,
+          description = base.description or "",
+          would_have = local_actions,
+        }
+      else
+        for _, a in ipairs(local_actions) do actions[#actions + 1] = a end
       end
     else
-      -- No UUID on this line → new task
-      local clean = strip_private(lt)
-      local add_a = { type = "add", description = lt.description or "", fields = clean }
-      if lt._started then add_a._post_start = true end
-      if lt.status == "completed" then add_a._post_done = true end
-      actions[#actions + 1] = add_a
+      if short and not force then
+        -- Line carries a UUID comment that does not match any task currently in
+        -- `base_tasks`. Either the task was deleted externally, or its filter
+        -- membership changed. Either way we must NOT treat the line as a new
+        -- add (which would duplicate the task as pending).
+        conflicts[#conflicts + 1] = {
+          type = "external_delete",
+          short_uuid = short,
+          description = lt.description or "",
+        }
+      else
+        -- No UUID on this line → new task (or force mode: accept the add even
+        -- if the short UUID is unknown, preserving the old destructive behaviour).
+        local clean = strip_private(lt)
+        local add_a = { type = "add", description = lt.description or "", fields = clean }
+        if lt._started then add_a._post_start = true end
+        if lt.status == "completed" then add_a._post_done = true end
+        actions[#actions + 1] = add_a
+      end
     end
   end
 
   for full_uuid, base in pairs(uuid_map) do
     if not seen[full_uuid] then
-      local desc = base.description or ""
-      if on_delete == "delete" then
-        actions[#actions + 1] = { type = "delete", uuid = full_uuid, description = desc, fields = {} }
+      if externally_touched(base) then
+        -- Task was (re)created or modified after render, and is missing from the
+        -- buffer only because the user's view is stale — NOT because they deleted
+        -- the line. Do not mark done/delete.
+        conflicts[#conflicts + 1] = {
+          type = "external_add",
+          uuid = full_uuid,
+          description = base.description or "",
+        }
       else
-        actions[#actions + 1] = { type = "done", uuid = full_uuid, description = desc, fields = {} }
+        local desc = base.description or ""
+        if on_delete == "delete" then
+          actions[#actions + 1] = { type = "delete", uuid = full_uuid, description = desc, fields = {} }
+        else
+          actions[#actions + 1] = { type = "done", uuid = full_uuid, description = desc, fields = {} }
+        end
       end
     end
   end
 
-  return actions
+  return actions, conflicts
 end
 
 -- ---------------------------------------------------------------------------
@@ -1007,24 +1129,6 @@ local function parse_header(line)
   }
 end
 
--- parse ISO timestamp into a unix-seconds number (UTC). Returns nil on failure.
-local function iso_to_unix(s)
-  if not s or s == "" then return nil end
-  -- Accept YYYY-MM-DDTHH:MM:SS[Z|+00:00] or TW format YYYYMMDDTHHMMSSZ
-  local y, mo, d, h, mi, se = s:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)[Tt ](%d%d):(%d%d):(%d%d)")
-  if not y then
-    y, mo, d, h, mi, se = s:match("^(%d%d%d%d)(%d%d)(%d%d)T(%d%d)(%d%d)(%d%d)Z?$")
-  end
-  if not y then return nil end
-  -- Use os.time but force UTC: compute local offset and adjust.
-  local t = { year = tonumber(y), month = tonumber(mo), day = tonumber(d),
-              hour = tonumber(h), min = tonumber(mi), sec = tonumber(se) }
-  local local_time = os.time(t)
-  -- os.time treats table as local; adjust for UTC offset
-  local utc_offset = os.difftime(os.time(), os.time(os.date("!*t", os.time())))
-  return local_time + utc_offset
-end
-
 -- args = { file=str (optional), content=str (if provided, used instead), on_delete=str, force=bool, dry_run=bool }
 -- Returns the summary dict.
 function M.apply(args)
@@ -1076,26 +1180,12 @@ function M.apply(args)
   local base_tasks = M.tw_export(filter_args)
   base_tasks = collapse_recurring(base_tasks)
 
-  local conflicts = {}
-  if not args.force and rendered_at and rendered_at ~= "" then
-    local ra = iso_to_unix(rendered_at)
-    if ra then
-      for _, task in ipairs(base_tasks) do
-        local mod = task.modified
-        if mod then
-          local md = iso_to_unix(mod)
-          if md and md > ra then
-            conflicts[#conflicts + 1] = task.uuid or "unknown"
-          end
-        end
-      end
-    end
-  end
-
-  local diff = M.compute_diff(parsed_lines, base_tasks, {
+  local diff, conflicts = M.compute_diff(parsed_lines, base_tasks, {
     on_delete = args.on_delete or "done",
     extra_fields = extra_fields,
     omit_group_field = group_field,
+    rendered_at = rendered_at,
+    force = args.force == true,
   })
 
   if args.dry_run then

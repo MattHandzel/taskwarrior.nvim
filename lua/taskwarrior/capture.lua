@@ -54,14 +54,41 @@ function M.open(refresh_fn)
   -- expr-mapping wrappers) can invoke our callbacks from inside a textlock
   -- context where nvim_win_close raises E565. Scheduling moves the close to
   -- the next main loop tick where textlock is released.
+  local function do_close()
+    if vim.api.nvim_win_is_valid(win) then
+      pcall(vim.api.nvim_win_close, win, true)
+    end
+    if vim.fn.mode():sub(1, 1) == "i" then
+      vim.cmd("stopinsert")
+    end
+  end
+
   local function close()
+    vim.schedule(do_close)
+  end
+
+  local function close_with_confirm()
     vim.schedule(function()
-      if vim.api.nvim_win_is_valid(win) then
-        pcall(vim.api.nvim_win_close, win, true)
+      if config.options.capture_confirm_close ~= false then
+        local line = vim.api.nvim_buf_is_valid(buf)
+            and (vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1] or "")
+            or ""
+        if line:match("%S") then
+          -- vim.fn.confirm requires a non-textlock context; we're already
+          -- inside vim.schedule, so it's safe to call here.
+          local choice = vim.fn.confirm("Discard task?", "&Yes\n&No", 2)
+          if choice ~= 1 then
+            -- Restore insert mode at the line's end so typing resumes naturally.
+            if vim.api.nvim_win_is_valid(win) then
+              vim.api.nvim_set_current_win(win)
+              vim.api.nvim_win_set_cursor(win, { 1, #line })
+              vim.cmd("startinsert!")
+            end
+            return
+          end
+        end
       end
-      if vim.fn.mode():sub(1, 1) == "i" then
-        vim.cmd("stopinsert")
-      end
+      do_close()
     end)
   end
 
@@ -120,9 +147,9 @@ function M.open(refresh_fn)
     return ""
   end, { buffer = buf, expr = true })
 
-  vim.keymap.set("i", "<Esc>", close, { buffer = buf })
-  vim.keymap.set("n", "<Esc>", close, { buffer = buf })
-  vim.keymap.set("n", "q", close, { buffer = buf })
+  vim.keymap.set("i", "<Esc>", close_with_confirm, { buffer = buf })
+  vim.keymap.set("n", "<Esc>", close_with_confirm, { buffer = buf })
+  vim.keymap.set("n", "q", close_with_confirm, { buffer = buf })
 end
 
 return M

@@ -1049,16 +1049,24 @@ class TestIntegrationConflicts:
     """Conflict detection behavior."""
 
     def test_conflict_detected_without_force(self, tw_env, tmp_path):
+        # Real divergence: task was modified after render AND the buffer also
+        # carries a local edit (different project). The old semantic flagged any
+        # post-render modification as a conflict even when the buffer was
+        # untouched — that produced noisy false positives. The new semantic
+        # requires actual divergence, surfaced as external_modify.
         _tw_add(tw_env, "Conflict task", "project:Test")
         tasks = _tw_export_all(tw_env)
         uuid_short = tasks[0]["uuid"][:8]
-        # rendered_at in the past → task modified after render → conflict
         content = (
             "<!-- taskmd filter: status:pending | sort: urgency- | rendered_at: 2020-01-01T00:00:00 -->\n\n"
-            f"- [ ] Conflict task project:Test <!-- uuid:{uuid_short} -->\n"
+            f"- [ ] Conflict task project:LocalEdit <!-- uuid:{uuid_short} -->\n"
         )
         summary = _apply_markdown(content, tmp_path, force=False)
         assert len(summary["conflicts"]) >= 1
+        assert any(c.get("type") == "external_modify" for c in summary["conflicts"])
+        # And the buffer's would-be modify was skipped: project stays "Test".
+        still = _tw_export_all(tw_env)
+        assert still[0]["project"] == "Test"
 
     def test_no_conflict_with_force(self, tw_env, tmp_path):
         _tw_add(tw_env, "No conflict task", "project:Test")
@@ -1070,6 +1078,59 @@ class TestIntegrationConflicts:
         )
         summary = _apply_markdown(content, tmp_path, force=True)
         assert summary["conflicts"] == []
+
+    def test_no_conflict_when_buffer_matches_base(self, tw_env, tmp_path):
+        # Regression guard for the precision upgrade: a task modified AFTER
+        # render but whose buffer representation hasn't diverged must NOT
+        # surface a conflict. Avoids noisy prompts on passive re-saves.
+        _tw_add(tw_env, "Untouched task", "project:Test")
+        tasks = _tw_export_all(tw_env)
+        uuid_short = tasks[0]["uuid"][:8]
+        content = (
+            "<!-- taskmd filter: status:pending | sort: urgency- | rendered_at: 2020-01-01T00:00:00 -->\n\n"
+            f"- [ ] Untouched task project:Test <!-- uuid:{uuid_short} -->\n"
+        )
+        summary = _apply_markdown(content, tmp_path, force=False)
+        assert summary["conflicts"] == []
+        assert summary["action_count"] == 0
+
+    def test_external_add_not_clobbered(self, tw_env, tmp_path):
+        # External task added between render and save must NOT be marked
+        # done/delete even though it isn't in the buffer.
+        rendered_at_in_past = "2020-01-01T00:00:00"
+        _tw_add(tw_env, "Task in buffer", "project:P")
+        first = _tw_export_all(tw_env)[0]
+        _tw_add(tw_env, "Externally added", "project:P")
+        content = (
+            f"<!-- taskmd filter: status:pending | sort: urgency- | rendered_at: {rendered_at_in_past} -->\n\n"
+            f"- [ ] Task in buffer project:P <!-- uuid:{first['uuid'][:8]} -->\n"
+        )
+        summary = _apply_markdown(content, tmp_path, force=False)
+        # Externally-added task must still be pending.
+        all_tasks = _tw_export_all(tw_env)
+        pending = [t for t in all_tasks if t.get("status") == "pending"]
+        assert len(pending) == 2
+        assert any(c.get("type") == "external_add" for c in summary["conflicts"])
+
+    def test_external_delete_not_resurrected(self, tw_env, tmp_path):
+        # Buffer line carries a UUID that no longer exists in base (externally
+        # completed or filter-moved). Plugin must NOT resurrect it as a new add.
+        _tw_add(tw_env, "Doomed", "project:P")
+        t = _tw_export_all(tw_env)[0]
+        uuid_short = t["uuid"][:8]
+        # Complete externally so it leaves the status:pending filter.
+        subprocess.run(
+            ["task", "rc.bulk=0", "rc.confirmation=off", t["uuid"], "done"],
+            env=tw_env, check=True, capture_output=True,
+        )
+        content = (
+            "<!-- taskmd filter: status:pending | sort: urgency- | rendered_at: 2020-01-01T00:00:00 -->\n\n"
+            f"- [ ] Doomed project:P <!-- uuid:{uuid_short} -->\n"
+        )
+        summary = _apply_markdown(content, tmp_path, force=False)
+        pending = [t for t in _tw_export_all(tw_env) if t.get("status") == "pending"]
+        assert pending == [], "plugin resurrected a task that was externally completed"
+        assert any(c.get("type") == "external_delete" for c in summary["conflicts"])
 
 
 class TestIntegrationStartStop:

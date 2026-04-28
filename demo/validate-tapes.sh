@@ -30,7 +30,10 @@ validate_tape() {
 
   # Only validate tapes that launch nvim (i.e., tapes that display task data).
   # Tapes that only run shell commands or echo don't need env isolation.
-  if ! grep -qP '^Type\s+".*nvim' "$tape"; then
+  # Match `nvim` followed by a flag (e.g. `nvim -u init.lua`) so the substring
+  # "nvim" inside product names ("taskwarrior.nvim") or paths
+  # ("/tmp/task-nvim-demo/") doesn't false-positive.
+  if ! grep -qP '\bnvim\s+-' "$tape"; then
     return 0
   fi
 
@@ -48,8 +51,10 @@ validate_tape() {
     ((fails++)) || true
   fi
 
-  # Rule 3: Every Type line containing 'nvim' must also have inline TASKRC= and TASKDATA=
-  # (defense-in-depth: VHS Env may not propagate in all versions)
+  # Rule 3: Every Type line that actually launches nvim (i.e. `nvim -<flag>`)
+  # must also have inline TASKRC= and TASKDATA= — defense-in-depth, since
+  # VHS `Env` doesn't always propagate to subshells. Same tightened regex
+  # as the gating check above so product names / paths don't false-positive.
   while IFS= read -r line; do
     if ! echo "$line" | grep -qP 'TASKRC='; then
       echo -e "${RED}FAIL${NC} [$name] nvim launch missing inline TASKRC=: $line"
@@ -59,7 +64,7 @@ validate_tape() {
       echo -e "${RED}FAIL${NC} [$name] nvim launch missing inline TASKDATA=: $line"
       ((fails++)) || true
     fi
-  done < <(grep -P '^Type\s+".*nvim' "$tape")
+  done < <(grep -P '^Type\s+".*\bnvim\s+-' "$tape")
 
   # Rule 4: Must seed from a known demo script (not from real data)
   if ! grep -qP 'seed-tasks\.sh|seed-views\.sh' "$tape"; then

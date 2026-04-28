@@ -9,10 +9,14 @@ local KNOWN_KEYS = {
 	"on_delete", "confirm", "sort", "group", "fields", "taskmd_path",
 	"backend", "capture_key", "open_key", "filter_key", "sort_key",
 	"group_key", "project_add_key", "filters", "projects", "icons",
-	"border_style", "capture_width", "capture_height", "group_separator",
+	"border_style", "capture_width", "capture_height", "capture_confirm_close",
+	"group_separator",
 	"animation", "clamp_cursor", "day_start_hour", "urgency_coefficients",
 	"urgency_value_mappers", "custom_urgency", "auto_backup", "auto_backup_keep",
 	"feedback_endpoint", "feedback_github_repo", "delegate",
+	"tag_colors", "urgency_colors", "notifications", "granulation",
+	"header_stats", "icons", "urgency_bar", "relative_dates",
+	"relative_date_refresh_ms", "show_urgency", "overdue_badge",
 }
 
 -- All valid delegate sub-keys (nil-defaulted keys included).
@@ -42,6 +46,7 @@ local TOP_LEVEL_TYPES = {
 	border_style          = "string",
 	capture_width         = "number",    -- nil OK
 	capture_height        = "number",
+	capture_confirm_close = "boolean",
 	group_separator       = "boolean",
 	animation             = "boolean",
 	clamp_cursor          = "boolean",
@@ -53,6 +58,18 @@ local TOP_LEVEL_TYPES = {
 	auto_backup_keep      = "number",
 	feedback_github_repo  = "string",
 	delegate              = "table",
+	tag_colors            = "table",
+	urgency_colors        = "table",
+	notifications         = "table",
+	granulation           = "table",
+	header_stats          = "table", -- false OK (custom check below)
+	urgency_bar           = "boolean",
+	show_urgency          = "boolean",
+	overdue_badge         = "boolean",
+	relative_dates        = "boolean",
+	relative_date_refresh_ms = "number",
+	-- icons may be a table (partial override), nil (auto-detect), or false
+	-- (force ASCII). Custom-checked below.
 }
 
 -- Expected types for delegate sub-keys.
@@ -180,12 +197,38 @@ function M.validate(opts)
 		end
 	end
 
-	-- 5. Nested: projects — values must be strings.
+	-- 5. Nested: projects — values must be strings (legacy form) or tables
+	--    with { name, view?, filter?, sort? } keys (extended form).
 	if opts.projects ~= nil then
+		local PROJECT_ENTRY_KEYS = {
+			name = "string", view = "string", filter = "string", sort = "string",
+		}
 		for path, proj in pairs(opts.projects) do
-			if type(proj) ~= "string" then
+			if type(proj) == "string" then
+				-- legacy form — always valid
+			elseif type(proj) == "table" then
+				for k, v in pairs(proj) do
+					local expected = PROJECT_ENTRY_KEYS[k]
+					if not expected then
+						error(
+							("taskwarrior.nvim: projects['%s'].%s is not a recognized key"):format(
+								tostring(path), tostring(k)
+							),
+							0
+						)
+					end
+					if type(v) ~= expected then
+						error(
+							("taskwarrior.nvim: projects['%s'].%s must be a %s, got %s"):format(
+								tostring(path), tostring(k), expected, type(v)
+							),
+							0
+						)
+					end
+				end
+			else
 				error(
-					("taskwarrior.nvim: projects['%s'] must be a string, got %s"):format(
+					("taskwarrior.nvim: projects['%s'] must be a string or table, got %s"):format(
 						tostring(path), type(proj)
 					),
 					0
@@ -218,6 +261,120 @@ function M.validate(opts)
 					),
 					0
 				)
+			end
+		end
+	end
+
+	-- 8. Nested: tag_colors — values must be a string (highlight group) or
+	--    a table (spec passed to nvim_set_hl).
+	if opts.tag_colors ~= nil then
+		for tag, val in pairs(opts.tag_colors) do
+			if type(val) ~= "string" and type(val) ~= "table" then
+				error(
+					("taskwarrior.nvim: tag_colors['%s'] must be a string or table, got %s"):format(
+						tostring(tag), type(val)
+					),
+					0
+				)
+			end
+		end
+	end
+
+	-- 9. Nested: urgency_colors — list of { threshold = number, hl = string|table }.
+	if opts.urgency_colors ~= nil then
+		for i, entry in ipairs(opts.urgency_colors) do
+			if type(entry) ~= "table" then
+				error(
+					("taskwarrior.nvim: urgency_colors[%d] must be a table, got %s"):format(
+						i, type(entry)
+					),
+					0
+				)
+			end
+			if type(entry.threshold) ~= "number" then
+				error(
+					("taskwarrior.nvim: urgency_colors[%d].threshold must be a number"):format(i),
+					0
+				)
+			end
+			if type(entry.hl) ~= "string" and type(entry.hl) ~= "table" then
+				error(
+					("taskwarrior.nvim: urgency_colors[%d].hl must be a string or table"):format(i),
+					0
+				)
+			end
+		end
+	end
+
+	-- 10. Nested: notifications — values must be booleans.
+	if opts.notifications ~= nil then
+		for cat, val in pairs(opts.notifications) do
+			if type(val) ~= "boolean" then
+				error(
+					("taskwarrior.nvim: notifications['%s'] must be a boolean, got %s"):format(
+						tostring(cat), type(val)
+					),
+					0
+				)
+			end
+		end
+	end
+
+	-- 11. Nested: granulation sub-keys.
+	if opts.granulation ~= nil then
+		local gkeys = { enabled = "boolean", idle_ms = "number", notify_on_stop = "boolean" }
+		for k, v in pairs(opts.granulation) do
+			local expected = gkeys[k]
+			if not expected then
+				error(
+					("taskwarrior.nvim: unknown setup key 'granulation.%s'"):format(k),
+					0
+				)
+			end
+			if type(v) ~= expected then
+				error(
+					("taskwarrior.nvim: setup key 'granulation.%s' must be a %s, got %s"):format(
+						k, expected, type(v)
+					),
+					0
+				)
+			end
+		end
+	end
+
+	-- 12. Nested: header_stats — list of functions, or empty list.
+	if opts.header_stats ~= nil then
+		for i, fn in ipairs(opts.header_stats) do
+			if type(fn) ~= "function" then
+				error(
+					("taskwarrior.nvim: header_stats[%d] must be a function, got %s"):format(
+						i, type(fn)
+					),
+					0
+				)
+			end
+		end
+	end
+
+	-- 13. Icons: boolean, nil (auto), false (force ASCII), or partial override table.
+	if opts.icons ~= nil then
+		local t = type(opts.icons)
+		if t ~= "boolean" and t ~= "table" then
+			error(
+				("taskwarrior.nvim: setup key 'icons' must be a boolean or table, got %s"):format(t),
+				0
+			)
+		end
+		if t == "table" then
+			for k, v in pairs(opts.icons) do
+				if type(v) ~= "string" then
+					error(
+						("taskwarrior.nvim: icons['%s'] must be a string, got %s"):format(
+							tostring(k), type(v)
+						),
+						0
+					)
+				end
 			end
 		end
 	end

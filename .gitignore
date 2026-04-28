@@ -17,3 +17,6 @@ STRESS-TEST-REPORT.md
 
 # Lua test-harness dependencies (cloned on-demand by tests/lua/bootstrap.sh)
 tests/lua/.deps/
+
+# Generated help tags — rebuilt locally by `:helptags`
+doc/tags

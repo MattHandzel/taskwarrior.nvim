@@ -36,8 +36,8 @@ function M._on_write(bufnr)
   require("taskwarrior.apply").on_write(bufnr, refresh_buf, M._do_apply)
 end
 
-function M._do_apply(bufnr, tmpfile, on_delete)
-  require("taskwarrior.apply").do_apply_and_refresh(bufnr, tmpfile, on_delete, refresh_buf)
+function M._do_apply(bufnr, tmpfile, on_delete, opts)
+  require("taskwarrior.apply").do_apply_and_refresh(bufnr, tmpfile, on_delete, refresh_buf, opts)
 end
 
 M.get_taskmd_path = get_taskmd_path
@@ -170,6 +170,36 @@ function M.capture()
   end)
 end
 
+-- -------------------------------------------------------------------------
+-- Task-level modify operations (module thin-forward; see modify.lua).
+-- -------------------------------------------------------------------------
+
+function M.append(text)      require("taskwarrior.modify").append(text)   end
+function M.prepend(text)     require("taskwarrior.modify").prepend(text)  end
+function M.duplicate()       require("taskwarrior.modify").duplicate()    end
+function M.purge(filter)     require("taskwarrior.modify").purge(filter)  end
+function M.denotate()        require("taskwarrior.modify").denotate()     end
+function M.modify_project()  require("taskwarrior.modify").modify_project()  end
+function M.modify_priority() require("taskwarrior.modify").modify_priority() end
+function M.modify_due()      require("taskwarrior.modify").modify_due()      end
+function M.modify_tag()      require("taskwarrior.modify").modify_tag()      end
+
+function M.modify_field_by_name(field)
+  require("taskwarrior.modify").modify_field_by_name(field)
+end
+
+function M.bulk_modify(range, spec)
+  require("taskwarrior.bulk").modify(range, spec)
+end
+
+function M.report(name)      require("taskwarrior.report").open(name, M.open) end
+function M.report_names()    return require("taskwarrior.report").names() end
+function M.float()           require("taskwarrior.buffer").open_float() end
+function M.graph()           require("taskwarrior.graph").open() end
+function M.inbox()           require("taskwarrior.inbox").run() end
+function M.export(path)      require("taskwarrior.export").write(path) end
+function M.sync()            require("taskwarrior.sync").run() end
+
 -- Omnifunc bridge — capture buffer sets omnifunc to a v:lua expression that
 -- needs this method on the top-level require("taskwarrior") module.
 function M._capture_omnifunc(findstart, base)
@@ -268,6 +298,14 @@ function M.setup(opts)
   end
 
   M._setup_commands()
+
+  -- Optional: auto-stop running Taskwarrior timers after N ms idle.
+  pcall(function() require("taskwarrior.granulation").setup() end)
+
+  -- Refresh embedded `<!-- taskmd query: ... -->` blocks inside markdown
+  -- buffers on read/write. Completely passive — only affects markdown files
+  -- that contain at least one block.
+  pcall(function() require("taskwarrior.query_blocks").setup() end)
 end
 
 return M

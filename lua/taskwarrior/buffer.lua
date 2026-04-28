@@ -24,6 +24,34 @@ local function uuid_from_line(line)
   return line:match("<!%-%-.*uuid:([0-9a-fA-F]+).*%-%->")
 end
 
+-- Resolve the checkbox glyph for a slot, or nil if no icon should render
+-- (parser-faithful "- [ ]" stays visible).
+--
+-- Returns the raw glyph string without padding; the caller is responsible
+-- for placing it (currently as inline virt_text alongside a conceal extmark
+-- that hides the literal "- [ ]" prefix).
+--
+-- Suppressed when `icons = false` (forced ASCII) or when `icons = "auto"`
+-- and `vim.g.have_nerd_font` is unset.
+local function checkbox_overlay_text(slot)
+  if not slot then return nil end
+  local config = require("taskwarrior.config")
+  local user = config.options.icons
+  if user == false then return nil end
+  if user == "auto" and not vim.g.have_nerd_font then return nil end
+
+  local glyph
+  if type(user) == "table" and type(user[slot]) == "string" then
+    glyph = user[slot]
+  else
+    glyph = require("taskwarrior.icons").get(slot)
+  end
+  if not glyph or glyph == "" then return nil end
+  return glyph
+end
+
+M._checkbox_overlay_text = checkbox_overlay_text  -- exported for testing
+
 -- ---------------------------------------------------------------------------
 -- Buffer line utilities
 -- ---------------------------------------------------------------------------
@@ -192,9 +220,137 @@ end
 local hl_ns = vim.api.nvim_create_namespace("taskwarrior_hl")
 local vt_ns = vim.api.nvim_create_namespace("taskwarrior_vt")
 
+-- Paint the checkbox visuals on a single line: a conceal extmark over the
+-- literal "- [ ]" prefix (5 cells → 0 cells visible) plus an inline
+-- virt_text extmark inserting "icon " (2 cells) at col 0. Net: text starts
+-- ~3 cells closer to the margin than the raw markdown.
+--
+-- Both extmarks live in `vt_ns` so the apply_virtual_text clear-namespace
+-- call wipes them on every refresh. Idempotent — calling twice on the same
+-- line just replaces the extmarks.
+--
+-- Returns true if a paint was applied (overlay enabled), false otherwise.
+local function paint_checkbox_line(bufnr, lnum, line)
+  if not line then
+    line = vim.api.nvim_buf_get_lines(bufnr, lnum, lnum + 1, false)[1] or ""
+  end
+  local box = line:match("^%- %[([ x>])%]")
+  if not box then return false end
+  local slot, hl
+  if box == " " then slot, hl = "checkbox_pending", "taskmdCheckboxPending"
+  elseif box == ">" then slot, hl = "checkbox_started", "taskmdCheckboxActive"
+  elseif box == "x" then slot, hl = "checkbox_done", "taskmdCheckboxDone"
+  end
+  local glyph = checkbox_overlay_text(slot)
+  if not glyph then return false end
+  -- Hide the literal "- [ ] " (5-char checkbox + 1 trailing space, bytes
+  -- 0..5 inclusive). The conceal extmark relies on the buffer's
+  -- conceallevel = 3 which is set in setup_buf_autocmds' BufWinEnter.
+  -- Only hide if there's actually something at byte 5 to hide; on an empty
+  -- "- [ ]" line (no trailing space yet, e.g. fresh insert) we hide just
+  -- the 5-char prefix.
+  local has_trailing_space = vim.api.nvim_buf_get_text(
+    bufnr, lnum, 5, lnum, 6, {})[1] == " "
+  vim.api.nvim_buf_set_extmark(bufnr, vt_ns, lnum, 0, {
+    end_row = lnum,
+    end_col = has_trailing_space and 6 or 5,
+    conceal = "",
+  })
+  -- Insert the icon at col 0 as inline virt_text. Trailing space provides
+  -- a single-cell separator before the description.
+  vim.api.nvim_buf_set_extmark(bufnr, vt_ns, lnum, 0, {
+    virt_text = { { glyph, hl }, { " ", "" } },
+    virt_text_pos = "inline",
+    hl_mode = "combine",
+  })
+  return true
+end
+
+M._paint_checkbox_line = paint_checkbox_line  -- exported for testing
+
 -- ---------------------------------------------------------------------------
 -- Virtual text (urgency + annotation count)
 -- ---------------------------------------------------------------------------
+
+-- Resolve an urgency value to a highlight group using the user's
+-- config.urgency_colors breakpoints. Rows are { threshold, hl } tuples
+-- (in the config they're tables with named keys). First row whose threshold
+-- is <= urgency wins. Returns the hl group name; materializes inline table
+-- specs into ad-hoc groups on demand.
+local function urgency_hl(urgency)
+  local config = require("taskwarrior.config")
+  local bands = config.options.urgency_colors
+  if not bands or not urgency then return "Comment" end
+  for _, band in ipairs(bands) do
+    if urgency >= band.threshold then
+      if type(band.hl) == "string" then return band.hl end
+      if type(band.hl) == "table" then
+        local gname = string.format("TaskUrgBand_%d",
+          math.floor(band.threshold * 100))
+        pcall(vim.api.nvim_set_hl, 0, gname, band.hl)
+        return gname
+      end
+    end
+  end
+  return "Comment"
+end
+
+M.urgency_hl = urgency_hl
+
+-- ---------------------------------------------------------------------------
+-- Contextual date formatter: "2026-04-21" → "today" / "in 3d · Fri" / "2d overdue".
+-- Returns (label, hl_group) or nil if the input is unparseable.
+-- Hard rule from the UI research: NEVER rewrite the buffer text — the
+-- absolute date stays as-is, the relative form rides alongside as
+-- virtual text.
+-- ---------------------------------------------------------------------------
+local WEEKDAY_SHORT = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" }
+
+local function today_ymd()
+  return os.date("!%Y-%m-%d")
+end
+
+local function ymd_to_epoch(ymd)
+  local y, mo, d = ymd:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)$")
+  if not y then return nil end
+  return os.time({ year = tonumber(y), month = tonumber(mo), day = tonumber(d),
+                   hour = 12, min = 0, sec = 0 })
+end
+
+local function relative_date(ymd)
+  if not ymd then return nil end
+  local target = ymd_to_epoch(ymd)
+  if not target then return nil end
+  local now = ymd_to_epoch(today_ymd())
+  local delta_days = math.floor((target - now) / 86400 + 0.5)
+
+  if delta_days < -1 then
+    return string.format("%dd overdue", -delta_days), "TaskDueOverdue"
+  end
+  if delta_days == -1 then
+    return "1d overdue", "TaskDueOverdue"
+  end
+  if delta_days == 0 then
+    return "today", "TaskDueToday"
+  end
+  if delta_days == 1 then
+    return "tomorrow", "TaskDueSoon"
+  end
+  if delta_days >= 2 and delta_days <= 6 then
+    local dow = tonumber(os.date("!%w", target)) + 1 -- 1-based
+    return string.format("in %dd · %s", delta_days, WEEKDAY_SHORT[dow]), "TaskDue"
+  end
+  if delta_days >= 7 and delta_days <= 13 then
+    local dow = tonumber(os.date("!%w", target)) + 1
+    return "next " .. WEEKDAY_SHORT[dow], "TaskDue"
+  end
+  if delta_days <= 60 then
+    return string.format("in %dw", math.floor(delta_days / 7)), "TaskSubtle"
+  end
+  return string.format("in %dmo", math.floor(delta_days / 30)), "TaskSubtle"
+end
+
+M._relative_date = relative_date  -- exported for e2e testing
 
 local function apply_virtual_text(bufnr)
   vim.api.nvim_buf_clear_namespace(bufnr, vt_ns, 0, -1)
@@ -215,6 +371,7 @@ local function apply_virtual_text(bufnr)
   if not parsed_ok or type(tasks) ~= "table" then return end
 
   local config = require("taskwarrior.config")
+  local icons = require("taskwarrior.icons")
   local meta = {}
   for _, t in ipairs(tasks) do
     if t.uuid then
@@ -226,29 +383,187 @@ local function apply_virtual_text(bufnr)
       meta[t.uuid:sub(1, 8)] = {
         urgency = urg,
         annotations = t.annotations and #t.annotations or 0,
+        due = t.due,
+        start = t["start"],
+        priority = t.priority,
+        effort = t.effort,
       }
     end
   end
 
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   for i, line in ipairs(lines) do
+    paint_checkbox_line(bufnr, i - 1, line)
+
     local short_uuid = uuid_from_line(line)
     if short_uuid and meta[short_uuid] then
       local m = meta[short_uuid]
-      local parts = {}
-      if m.urgency then
-        table.insert(parts, string.format("%.1f", m.urgency))
+      local chunks = {}
+
+      -- 1. Relative-date chip (leftmost, most actionable info)
+      if config.options.relative_dates ~= false then
+        local due_from_line = line:match("due:(%d%d%d%d%-%d%d%-%d%d)")
+        if due_from_line then
+          local label, hl = relative_date(due_from_line)
+          if label then
+            table.insert(chunks, { label, hl })
+          end
+        end
       end
-      if m.annotations > 0 then
-        table.insert(parts, string.format("[%d note%s]",
-          m.annotations, m.annotations > 1 and "s" or ""))
+
+      -- 2. Overdue badge — opt-in (off by default) because the relative-
+      -- date label already carries the "Nd overdue" message in the same
+      -- slot. Users who want a high-contrast alarm enable `overdue_badge`.
+      if config.options.overdue_badge and m.due then
+        local y, mo, d = m.due:match("^(%d%d%d%d)(%d%d)(%d%d)")
+        if y then
+          local iso = y .. "-" .. mo .. "-" .. d
+          if iso < today_ymd() then
+            if #chunks > 0 then table.insert(chunks, { "  ", "Comment" }) end
+            local badge = icons.get("badge_overdue")
+            table.insert(chunks, { " " .. badge .. " ", "TaskOverdueBadge" })
+          end
+        end
       end
-      if #parts > 0 then
-        vim.api.nvim_buf_set_extmark(bufnr, vt_ns, i - 1, 0, {
-          virt_text = { { table.concat(parts, "  "), "Comment" } },
-          virt_text_pos = "right_align",
+
+      -- 2b. Started-elapsed chip — if the task is active, show how long
+      -- it's been running. TW stores `start` as `YYYYMMDDTHHMMSSZ` (UTC).
+      --
+      -- Converting UTC components to a real epoch requires adding the
+      -- local-to-UTC offset, because os.time(table) interprets the table
+      -- as LOCAL time. The offset is `os.time() - os.time(os.date("!*t"))`,
+      -- which is negative for timezones west of UTC.
+      if m.start then
+        local y, mo, d, H, Mi, S = m.start:match(
+          "^(%d%d%d%d)(%d%d)(%d%d)T(%d%d)(%d%d)(%d%d)")
+        if y then
+          -- `isdst = false` is load-bearing: `os.date("!*t")` always sets
+          -- isdst=false (UTC has no DST), so the offset below is computed
+          -- under isdst=false. Leaving isdst nil on this table would make
+          -- Lua apply DST for the parsed time in summer, producing a
+          -- 1-hour mismatch on systems in DST-observing timezones.
+          local as_local = os.time({
+            year = tonumber(y), month = tonumber(mo), day = tonumber(d),
+            hour = tonumber(H), min = tonumber(Mi), sec = tonumber(S),
+            isdst = false,
+          })
+          local tz_offset = os.time() - os.time(os.date("!*t"))
+          local started_at = as_local + tz_offset
+          local elapsed = math.max(0, os.time() - started_at)
+          local elapsed_label
+          if elapsed < 60 then
+            elapsed_label = string.format("%ds", elapsed)
+          elseif elapsed < 3600 then
+            elapsed_label = string.format("%dm", math.floor(elapsed / 60))
+          else
+            elapsed_label = string.format("%dh%02dm",
+              math.floor(elapsed / 3600),
+              math.floor((elapsed % 3600) / 60))
+          end
+          if #chunks > 0 then table.insert(chunks, { "  ", "Comment" }) end
+          local icon = icons.get("status_started")
+          table.insert(chunks, { icon .. " " .. elapsed_label, "TaskAccent" })
+        end
+      end
+
+      -- 3. Urgency bar glyph + number — opt-in. Off by default because
+      -- a raw numeric urgency competes for attention with the more
+      -- actionable signals (priority sign, relative date). Users who
+      -- want the score visible enable `show_urgency = true`.
+      if config.options.show_urgency and m.urgency then
+        if #chunks > 0 then table.insert(chunks, { "  ", "Comment" }) end
+        if config.options.urgency_bar ~= false then
+          local slot = icons.urgency_bar_slot(m.urgency)
+          if slot then
+            table.insert(chunks, { icons.get(slot) .. " ", urgency_hl(m.urgency) })
+          end
+        end
+        table.insert(chunks, {
+          string.format("%.1f", m.urgency),
+          urgency_hl(m.urgency),
         })
       end
+
+      -- 4. Annotation count
+      if m.annotations > 0 then
+        if #chunks > 0 then table.insert(chunks, { "  ", "Comment" }) end
+        local note_icon = icons.get("status_note")
+        table.insert(chunks, {
+          string.format("%s %d", note_icon, m.annotations),
+          "TaskSubtle",
+        })
+      end
+
+      if #chunks > 0 then
+        -- `right_align` draws at the window's right edge; with `wrap=true`
+        -- and long task lines it overwrites the literal text on the
+        -- first wrap segment. `eol` places the chips immediately after
+        -- the line's last character, so they always follow content,
+        -- spilling onto an extra wrap line if needed rather than stomping
+        -- on it. Padding separator keeps the chips visually detached.
+        table.insert(chunks, 1, { "  ", "Comment" })
+        vim.api.nvim_buf_set_extmark(bufnr, vt_ns, i - 1, 0, {
+          virt_text = chunks,
+          virt_text_pos = "eol",
+        })
+      end
+
+      -- Sign column: priority (col 1) and status (col 2).
+      -- The sign-column extmarks live in the same namespace; `sign_text` is
+      -- limited to 2 display cells per extmark, so we emit two separate
+      -- extmarks to get both priority and status showing.
+      local prio_slot
+      if m.priority == "H" then prio_slot = "priority_h"
+      elseif m.priority == "M" then prio_slot = "priority_m"
+      elseif m.priority == "L" then prio_slot = "priority_l"
+      end
+      if prio_slot then
+        vim.api.nvim_buf_set_extmark(bufnr, vt_ns, i - 1, 0, {
+          sign_text = icons.get(prio_slot),
+          sign_hl_group = "Task" .. prio_slot:sub(1, 1):upper() .. prio_slot:sub(2):gsub("_(.)", function(c) return c:upper() end),
+          priority = 10,
+        })
+      end
+      local status_slot
+      if m.start then status_slot = "status_started"
+      else
+        local ymd_due = line:match("due:(%d%d%d%d%-%d%d%-%d%d)")
+        if ymd_due and ymd_due < today_ymd() then
+          status_slot = "status_overdue"
+        end
+      end
+      if status_slot then
+        local sign_hl = status_slot == "status_started"
+          and "TaskStarted" or "TaskUrgent"
+        vim.api.nvim_buf_set_extmark(bufnr, vt_ns, i - 1, 0, {
+          sign_text = icons.get(status_slot),
+          sign_hl_group = sign_hl,
+          priority = 11,
+        })
+      end
+    end
+  end
+
+  -- Header stats slots (below the taskmd comment header).
+  local stats = config.options.header_stats
+  if stats and type(stats) == "table" and #stats > 0 then
+    local slot_chunks = {}
+    for _, fn in ipairs(stats) do
+      local sok, text = pcall(fn, tasks)
+      if sok and type(text) == "string" and text ~= "" then
+        if #slot_chunks > 0 then
+          table.insert(slot_chunks, { "  ·  ", "Comment" })
+        end
+        table.insert(slot_chunks, { text, "TaskViewStat" })
+      end
+    end
+    if #slot_chunks > 0 and lines[1] and lines[1]:match("^<!%-%-.*taskmd") then
+      -- eol so it doesn't overlap header text on narrow windows.
+      table.insert(slot_chunks, 1, { "  ", "Comment" })
+      vim.api.nvim_buf_set_extmark(bufnr, vt_ns, 0, 0, {
+        virt_text = slot_chunks,
+        virt_text_pos = "eol",
+      })
     end
   end
 end
@@ -259,24 +574,43 @@ M.apply_virtual_text = apply_virtual_text
 -- Highlight definitions and application
 -- ---------------------------------------------------------------------------
 
+-- Palette organized by semantic role. Six colors max, per UI research.
+-- Users override with `urgency_colors` / `tag_colors`; these are the
+-- baseline highlight groups everything else references.
 local function define_highlights()
-  vim.api.nvim_set_hl(0, "TaskPriorityH", { fg = "#f38ba8", bold = true })
-  vim.api.nvim_set_hl(0, "TaskPriorityM", { fg = "#fab387", bold = true })
-  vim.api.nvim_set_hl(0, "TaskPriorityL", { fg = "#a6e3a1" })
-  vim.api.nvim_set_hl(0, "TaskDue", { fg = "#f9e2af" })
-  vim.api.nvim_set_hl(0, "TaskDueOverdue", { fg = "#f38ba8", bold = true })
-  vim.api.nvim_set_hl(0, "TaskScheduled", { fg = "#f9e2af" })
-  vim.api.nvim_set_hl(0, "TaskWait", { fg = "#9399b2" })
-  vim.api.nvim_set_hl(0, "TaskTag", { fg = "#89b4fa" })
-  vim.api.nvim_set_hl(0, "TaskProject", { fg = "#94e2d5" })
-  vim.api.nvim_set_hl(0, "TaskRecur", { fg = "#cba6f7" })
-  vim.api.nvim_set_hl(0, "TaskEffort", { fg = "#9399b2" })
-  vim.api.nvim_set_hl(0, "TaskCompleted", { fg = "#585b70" })
-  vim.api.nvim_set_hl(0, "TaskHeader", { fg = "#45475a" })
+  -- New role-based groups (for reuse in views, virt-text, etc.)
+  vim.api.nvim_set_hl(0, "TaskAccent", { fg = "#89b4fa", bold = true })   -- active/focus
+  vim.api.nvim_set_hl(0, "TaskUrgent", { fg = "#f38ba8", bold = true })   -- overdue/H
+  vim.api.nvim_set_hl(0, "TaskWarn",   { fg = "#fab387" })                 -- M/due-soon
+  vim.api.nvim_set_hl(0, "TaskInfo",   { fg = "#f9e2af" })                 -- due-future
+  vim.api.nvim_set_hl(0, "TaskTagHL",  { fg = "#cba6f7" })                 -- +tags (mauve)
+  vim.api.nvim_set_hl(0, "TaskSubtle", { fg = "#6c7086" })                 -- UDAs/wait/effort
+
+  -- Field-specific groups link to the role groups above. Overriding
+  -- a role instantly recolors every field that uses it.
+  vim.api.nvim_set_hl(0, "TaskPriorityH",   { link = "TaskUrgent" })
+  vim.api.nvim_set_hl(0, "TaskPriorityM",   { link = "TaskWarn"   })
+  vim.api.nvim_set_hl(0, "TaskPriorityL",   { link = "TaskSubtle" }) -- was green (misleading)
+  vim.api.nvim_set_hl(0, "TaskDue",         { link = "TaskInfo"   })
+  vim.api.nvim_set_hl(0, "TaskDueSoon",     { link = "TaskWarn"   })
+  vim.api.nvim_set_hl(0, "TaskDueToday",    { fg = "#fab387", bold = true })
+  vim.api.nvim_set_hl(0, "TaskDueOverdue",  { fg = "#f38ba8", bold = true })
+  vim.api.nvim_set_hl(0, "TaskScheduled",   { fg = "#f9e2af", italic = true })
+  vim.api.nvim_set_hl(0, "TaskWait",        { fg = "#6c7086", italic = true })
+  vim.api.nvim_set_hl(0, "TaskTag",         { link = "TaskTagHL" })
+  vim.api.nvim_set_hl(0, "TaskProject",     { link = "TaskSubtle" }) -- was teal, too loud
+  vim.api.nvim_set_hl(0, "TaskRecur",       { link = "TaskTagHL" })
+  vim.api.nvim_set_hl(0, "TaskEffort",      { link = "TaskSubtle" })
+  -- Strikethrough for completed — reads as "done, ignorable" at a glance
+  vim.api.nvim_set_hl(0, "TaskCompleted",   { fg = "#6c7086", strikethrough = true })
+  vim.api.nvim_set_hl(0, "TaskHeader",      { fg = "#45475a" })
   vim.api.nvim_set_hl(0, "TaskGroupHeader", { fg = "#cdd6f4", bold = true })
-  vim.api.nvim_set_hl(0, "TaskCheckbox", { fg = "#a6e3a1" })
-  vim.api.nvim_set_hl(0, "TaskCheckboxDone", { fg = "#585b70" })
-  vim.api.nvim_set_hl(0, "TaskStarted", { fg = "#89b4fa", bold = true })
+  vim.api.nvim_set_hl(0, "TaskCheckbox",    { fg = "#a6e3a1" })
+  vim.api.nvim_set_hl(0, "TaskCheckboxDone",{ fg = "#585b70" })
+  vim.api.nvim_set_hl(0, "TaskStarted",     { link = "TaskAccent" })
+  -- Overdue right-align pill uses an inverted-fg style so it pops against
+  -- normal right-align virt-text.
+  vim.api.nvim_set_hl(0, "TaskOverdueBadge",{ fg = "#1e1e2e", bg = "#f38ba8", bold = true })
 end
 
 -- Highlight patterns: { lua pattern, highlight group, is_prefix_match }
@@ -384,14 +718,29 @@ local function highlight_line(bufnr, line_nr, line)
 
   -- Tags: +word, but only when the `+` is at start-of-line or preceded by a
   -- non-word character. Prevents "housing+food" from highlighting "+food".
+  -- Honors config.tag_colors for per-tag overrides (e.g. +urgent → ErrorMsg).
+  local config = require("taskwarrior.config")
+  local tag_colors = config.options.tag_colors or {}
   pos = 1
   while true do
     local s, e = line:find("%+[%w_-]+", pos)
     if not s then break end
     local prev = s > 1 and line:sub(s - 1, s - 1) or ""
     if prev == "" or not prev:match("[%w_]") then
+      local tag_literal = line:sub(s, e)
+      local override = tag_colors[tag_literal]
+      local hl_group = "TaskTag"
+      if type(override) == "string" then
+        hl_group = override
+      elseif type(override) == "table" then
+        -- Materialize an ad-hoc highlight group for this tag. Name is stable
+        -- across invocations so we avoid re-defining on every redraw.
+        local gname = "TaskTag_" .. tag_literal:gsub("[^%w]", "_")
+        pcall(vim.api.nvim_set_hl, 0, gname, override)
+        hl_group = gname
+      end
       vim.api.nvim_buf_set_extmark(bufnr, hl_ns, line_nr, s - 1, {
-        end_col = e, hl_group = "TaskTag",
+        end_col = e, hl_group = hl_group,
       })
     end
     pos = e + 1
@@ -509,6 +858,12 @@ function M.setup_buf_keymaps(bufnr)
       return
     end
     vim.api.nvim_set_current_line(toggled)
+    -- Repaint the checkbox synchronously: nvim_set_current_line clears
+    -- extmarks on the line, and the next apply_virtual_text run only fires
+    -- on save. Without this, the user sees the raw "- [>]" / "- [x]"
+    -- markdown for a frame between the line edit and the next render.
+    local lnum = vim.api.nvim_win_get_cursor(0)[1] - 1
+    paint_checkbox_line(bufnr, lnum, toggled)
   end, opts)
 
   -- Insert task below
@@ -516,6 +871,7 @@ function M.setup_buf_keymaps(bufnr)
     local row = vim.api.nvim_win_get_cursor(0)[1]
     vim.api.nvim_buf_set_lines(bufnr, row, row, false, { "- [ ] " })
     vim.api.nvim_win_set_cursor(0, { row + 1, 6 })
+    paint_checkbox_line(bufnr, row, "- [ ] ")
     vim.cmd("startinsert!")
   end, opts)
 
@@ -524,6 +880,7 @@ function M.setup_buf_keymaps(bufnr)
     local row = vim.api.nvim_win_get_cursor(0)[1] - 1
     vim.api.nvim_buf_set_lines(bufnr, row, row, false, { "- [ ] " })
     vim.api.nvim_win_set_cursor(0, { row + 1, 6 })
+    paint_checkbox_line(bufnr, row, "- [ ] ")
     vim.cmd("startinsert!")
   end, opts)
 
@@ -637,7 +994,7 @@ function M.setup_buf_keymaps(bufnr)
     end, { buffer = bufnr, noremap = true, silent = true, desc = "taskwarrior.nvim: Change grouping" })
   end
 
-  -- Show full task info in split
+  -- Show full task info in a centered floating window.
   vim.keymap.set("n", "gf", function()
     local line = vim.api.nvim_get_current_line()
     local short_uuid = uuid_from_line(line)
@@ -656,9 +1013,64 @@ function M.setup_buf_keymaps(bufnr)
     vim.bo[detail_buf].buftype = "nofile"
     M.set_buf_lines(detail_buf, out)
     vim.bo[detail_buf].modifiable = false
-    vim.cmd("split")
-    vim.api.nvim_win_set_buf(0, detail_buf)
+
+    local cfg = require("taskwarrior.config")
+    local w = math.min(vim.o.columns - 4, 100)
+    local lines = vim.api.nvim_buf_get_lines(detail_buf, 0, -1, false)
+    local h = math.min(#lines + 2, math.floor(vim.o.lines * 0.8))
+    local win = vim.api.nvim_open_win(detail_buf, true, {
+      relative = "editor",
+      width = w,
+      height = h,
+      row = math.floor((vim.o.lines - h) / 2),
+      col = math.floor((vim.o.columns - w) / 2),
+      style = "minimal",
+      border = cfg.options.border_style or "rounded",
+      title = " Task " .. short_uuid .. " ",
+      title_pos = "center",
+    })
+    vim.keymap.set("n", "q", function()
+      pcall(vim.api.nvim_win_close, win, true)
+    end, { buffer = detail_buf, nowait = true, silent = true })
+    vim.keymap.set("n", "<Esc>", function()
+      pcall(vim.api.nvim_win_close, win, true)
+    end, { buffer = detail_buf, nowait = true, silent = true })
   end, opts)
+
+  -- Field-specific modify pickers. Prefix `M` + one letter so it composes
+  -- with `gm` (free-form modify) without collisions.
+  vim.keymap.set("n", "MM", function()
+    require("taskwarrior.modify").modify_project()
+  end, vim.tbl_extend("force", opts, { desc = "taskwarrior.nvim: Modify project" }))
+  vim.keymap.set("n", "Mp", function()
+    require("taskwarrior.modify").modify_priority()
+  end, vim.tbl_extend("force", opts, { desc = "taskwarrior.nvim: Modify priority" }))
+  vim.keymap.set("n", "MP", function()
+    require("taskwarrior.modify").modify_project()
+  end, vim.tbl_extend("force", opts, { desc = "taskwarrior.nvim: Modify project (alias of MM)" }))
+  vim.keymap.set("n", "MD", function()
+    require("taskwarrior.modify").modify_due()
+  end, vim.tbl_extend("force", opts, { desc = "taskwarrior.nvim: Modify due date" }))
+  vim.keymap.set("n", "Mt", function()
+    require("taskwarrior.modify").modify_tag()
+  end, vim.tbl_extend("force", opts, { desc = "taskwarrior.nvim: Add tag" }))
+
+  -- Task-level shortcuts
+  vim.keymap.set("n", ">>", function()
+    require("taskwarrior.modify").append()
+  end, vim.tbl_extend("force", opts, { desc = "taskwarrior.nvim: Append to description" }))
+  vim.keymap.set("n", "<<", function()
+    require("taskwarrior.modify").prepend()
+  end, vim.tbl_extend("force", opts, { desc = "taskwarrior.nvim: Prepend to description" }))
+  vim.keymap.set("n", "yt", function()
+    require("taskwarrior.modify").duplicate()
+  end, vim.tbl_extend("force", opts, { desc = "taskwarrior.nvim: Duplicate task" }))
+  vim.keymap.set("n", "dD", function()
+    require("taskwarrior.modify").purge()
+  end, vim.tbl_extend("force", opts, { desc = "taskwarrior.nvim: Purge (irreversible)" }))
+  vim.keymap.set("n", "gA", function()
+    require("taskwarrior.modify").denotate()
+  end, vim.tbl_extend("force", opts, { desc = "taskwarrior.nvim: Remove annotation" }))
 end
 
 -- ---------------------------------------------------------------------------
@@ -729,6 +1141,21 @@ function M.setup_buf_autocmds(bufnr, on_write_fn)
     end,
   })
 
+  -- Periodic refresh of the relative-date virt-text so buffers that stay
+  -- open across midnight or mealtime still read correctly. We only need
+  -- to re-run apply_virtual_text (cheap — one `task export` call) rather
+  -- than a full render.
+  local cfg_rf = require("taskwarrior.config").options.relative_date_refresh_ms
+  if cfg_rf and cfg_rf > 0 then
+    vim.api.nvim_create_autocmd("CursorHold", {
+      buffer = bufnr,
+      group = group,
+      callback = function()
+        if vim.api.nvim_buf_is_valid(bufnr) then apply_virtual_text(bufnr) end
+      end,
+    })
+  end
+
   -- Cursor clamping: keep cursor before the UUID comment region.
   --
   -- Only clamp on HORIZONTAL motions (same row as previous CursorMoved). On
@@ -770,16 +1197,42 @@ function M.open_task_buf(filter_str, on_write_fn, detect_project_fn)
   local config = require("taskwarrior.config")
   filter_str = filter_str or ""
 
+  -- Pull the full per-cwd project entry so we can honor an optional saved
+  -- `view` / `filter` / `sort` without a second lookup.
+  local cwd_entry
+  local ok_p, projects_mod = pcall(require, "taskwarrior.projects")
+  if ok_p then cwd_entry = projects_mod.detect_entry() end
+
   -- Auto-detect project filter from cwd when no filter is given
-  if filter_str == "" and detect_project_fn then
-    local project = detect_project_fn()
-    if project then
-      filter_str = "project:" .. project
+  if filter_str == "" then
+    if cwd_entry and cwd_entry.filter and cwd_entry.filter ~= "" then
+      filter_str = cwd_entry.filter
+    elseif cwd_entry and cwd_entry.name then
+      filter_str = "project:" .. cwd_entry.name
+    elseif detect_project_fn then
+      local project = detect_project_fn()
+      if project then filter_str = "project:" .. project end
     end
   end
 
-  local sort = config.options.sort or "urgency-"
-  local group = config.options.group
+  -- If the cwd entry names a saved view, load its filter/sort/group overrides
+  -- *unless* the caller passed an explicit filter.
+  if cwd_entry and cwd_entry.view and (not filter_str or filter_str == ""
+      or filter_str == "project:" .. (cwd_entry.name or "")) then
+    local ok_v, views_mod = pcall(require, "taskwarrior.saved_views")
+    if ok_v then
+      local v = views_mod._get(cwd_entry.view)
+      if v then
+        if v.filter and v.filter ~= "" then filter_str = v.filter end
+        cwd_entry._view_sort = v.sort
+        cwd_entry._view_group = v.group
+      end
+    end
+  end
+
+  local sort = (cwd_entry and cwd_entry._view_sort)
+               or config.options.sort or "urgency-"
+  local group = (cwd_entry and cwd_entry._view_group) or config.options.group
 
   -- Reuse existing task buffer with same filter
   for _, b in ipairs(vim.api.nvim_list_bufs()) do
@@ -788,6 +1241,10 @@ function M.open_task_buf(filter_str, on_write_fn, detect_project_fn)
       vim.wo[0].conceallevel = 3
       vim.wo[0].concealcursor = "nvic"
       vim.wo[0].wrap = true
+      -- Reserve two sign cells for priority + status glyphs. `auto:2` only
+      -- shows the column when a sign is present, so tasks with no priority
+      -- or status don't waste horizontal space.
+      vim.wo[0].signcolumn = "auto:2"
       M.refresh_buf(b)
       return
     end
@@ -829,6 +1286,65 @@ function M.open_task_buf(filter_str, on_write_fn, detect_project_fn)
       pcall(vim.api.nvim_buf_set_name, bufnr, buf_name)
     end
   end
+end
+
+-- ---------------------------------------------------------------------------
+-- open_float: render the task buffer in a centered floating window.
+-- Used by :TaskFloat. The floating window is ephemeral — closing it with `q`
+-- (buffer-local) or `<Esc>` drops the buffer; the underlying task state lives
+-- in Taskwarrior, not in the window.
+-- ---------------------------------------------------------------------------
+
+function M.open_float(filter_str)
+  local config = require("taskwarrior.config")
+  filter_str = filter_str or ""
+
+  local main = require("taskwarrior")
+  -- Reuse the open-task-buf pipeline to get a fully-wired acwrite buffer
+  -- (syntax, keymaps, autocmds). Then pop it into a float rather than the
+  -- current window.
+  local scratch = vim.api.nvim_create_buf(true, false)
+  vim.bo[scratch].buftype = "acwrite"
+  vim.bo[scratch].filetype = "taskmd"
+  vim.bo[scratch].swapfile = false
+  vim.bo[scratch].bufhidden = "wipe"
+
+  local sort = config.options.sort or "urgency-"
+  local group = config.options.group
+  local out = render(filter_str, sort, group)
+  if not out then return end
+  M.set_buf_lines(scratch, out)
+  vim.bo[scratch].modified = false
+  vim.b[scratch].task_filter = filter_str
+  vim.b[scratch].task_sort = sort
+  vim.b[scratch].task_group = group
+
+  M.setup_buf_syntax(scratch)
+  M.setup_buf_keymaps(scratch)
+  M.setup_buf_autocmds(scratch, main._on_write)
+
+  local w = math.min(vim.o.columns - 4, 120)
+  local h = math.min(vim.o.lines - 4, math.max(20, math.floor(vim.o.lines * 0.8)))
+  local win = vim.api.nvim_open_win(scratch, true, {
+    relative = "editor",
+    width = w,
+    height = h,
+    row = math.floor((vim.o.lines - h) / 2),
+    col = math.floor((vim.o.columns - w) / 2),
+    style = "minimal",
+    border = config.options.border_style or "rounded",
+    title = " Tasks: " .. (filter_str ~= "" and filter_str or "(all pending)") .. " ",
+    title_pos = "center",
+  })
+  vim.wo[win].conceallevel = 3
+  vim.wo[win].concealcursor = "nvic"
+  vim.wo[win].wrap = true
+
+  vim.keymap.set("n", "q", function()
+    pcall(vim.api.nvim_win_close, win, true)
+  end, { buffer = scratch, nowait = true, silent = true })
+
+  apply_virtual_text(scratch)
 end
 
 return M

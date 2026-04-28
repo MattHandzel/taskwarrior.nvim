@@ -31,15 +31,19 @@ syntax match taskmdCheckboxActive  /^-\s\[>\]/
 
 " field:value — project:, priority:, due:, scheduled:, recur:, wait:, until:,
 " effort:, depends:, and any user-defined UDA of the same form.
-syntax match taskmdField /\<\w\+:\S\+/ containedin=ALL
+syntax match taskmdField /\<\w\+:\S\+/
 
-" Priority values get their own highlight.
+" Priority values get their own highlight. Defined AFTER taskmdField so
+" vim's later-match-wins-at-equal-start rule picks these specific ones.
 syntax match taskmdPriorityH /\<priority:H\>/
 syntax match taskmdPriorityM /\<priority:M\>/
 syntax match taskmdPriorityL /\<priority:L\>/
 
-" Tags: +word (including hyphens).
-syntax match taskmdTag /+\w[-_\w]*/
+" Tags: +word (including hyphens). Requires a non-word char (or line start)
+" immediately before the `+` so that `housing+food` doesn't paint `+food`
+" as a tag. `\zs` records the match start *after* the prefix, so only the
+" `+word` portion is highlighted.
+syntax match taskmdTag /\%(^\|[^0-9A-Za-z_]\)\zs+\w[-_\w]*/
 
 " UUID comment at EOL.
 syntax match taskmdUuid /<!--\s*uuid:[0-9a-fA-F]\+\s*-->/ conceal

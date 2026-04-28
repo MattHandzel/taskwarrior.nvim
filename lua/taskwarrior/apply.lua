@@ -56,6 +56,38 @@ local function backup_taskdata()
   end
 end
 
+-- Format a single conflict entry for inclusion in the confirm-prompt preview
+-- or non-confirm error message.
+local function fmt_conflict(c)
+  local desc = c.description
+  if desc == nil or desc == "" then desc = c.uuid or c.short_uuid or "?" end
+  if c.type == "external_modify" then
+    return string.format("! conflict: %q was modified both in the buffer AND externally", desc)
+  elseif c.type == "external_delete" then
+    return string.format("- info: %q is in the buffer but no longer in Taskwarrior (deleted or filter-moved externally) — buffer line ignored", desc)
+  elseif c.type == "external_add" then
+    return string.format("+ info: %q was added/changed externally after render — preserved, will appear on next refresh", desc)
+  else
+    return string.format("! conflict (%s): %s", c.type or "unknown", desc)
+  end
+end
+
+-- Split conflicts into the BLOCKING set (real merge decisions for the user)
+-- and the INFORMATIONAL set (out-of-band adds/deletes that just need to be
+-- mentioned, not chosen between). Only `external_modify` is blocking — both
+-- sides changed the same task and only the user can pick a winner.
+local function partition_conflicts(conflicts)
+  local blocking, info = {}, {}
+  for _, c in ipairs(conflicts or {}) do
+    if c.type == "external_modify" then
+      table.insert(blocking, c)
+    else
+      table.insert(info, c)
+    end
+  end
+  return blocking, info
+end
+
 -- Apply helper: runs Lua backend if configured, else shells to bin/taskmd.
 -- Returns (result_table, error_string_or_nil).
 local function do_apply(opts)
@@ -92,9 +124,13 @@ end
 
 -- on_write: BufWriteCmd handler.
 -- refresh_fn: callback(bufnr) to re-render (avoids circular require with init)
--- do_apply_fn: callback(bufnr, tmpfile, on_delete) — used for the confirm path
+-- do_apply_fn: callback(bufnr, tmpfile, on_delete, opts) — used for the confirm path
 function M.on_write(bufnr, refresh_fn, do_apply_fn)
   local config = require("taskwarrior.config")
+
+  -- Capture :w! up-front: vim.v.cmdbang is set during the BufWriteCmd and may
+  -- be clobbered by any nested Ex command we run before we branch on it.
+  local force = vim.v.cmdbang == 1
 
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   local tmpfile = vim.fn.tempname()
@@ -107,6 +143,7 @@ function M.on_write(bufnr, refresh_fn, do_apply_fn)
       tmpfile = tmpfile,
       dry_run = true,
       on_delete = on_delete,
+      force = force,
     })
     if not decoded then
       vim.notify("taskwarrior.nvim: dry-run failed\n" .. (err or ""), vim.log.levels.ERROR)
@@ -115,14 +152,30 @@ function M.on_write(bufnr, refresh_fn, do_apply_fn)
     end
 
     local actions = decoded.actions or {}
-    if #actions == 0 then
+    local conflicts = decoded.conflicts or {}
+    local blocking, info = partition_conflicts(conflicts)
+    if #actions == 0 and #blocking == 0 and #info == 0 then
       vim.notify("taskwarrior.nvim: no changes")
       vim.bo[bufnr].modified = false
       vim.fn.delete(tmpfile)
       return
     end
 
+    -- Surface informational conflicts (external add/delete) once, up-front.
+    -- They don't require a decision, so they don't appear in the prompt.
+    if #info > 0 then
+      local info_lines = { string.format("taskwarrior.nvim: %d external change(s) detected since render:", #info) }
+      for _, c in ipairs(info) do table.insert(info_lines, "  " .. fmt_conflict(c)) end
+      vim.notify(table.concat(info_lines, "\n"))
+    end
+
     local labels = {}
+    if #blocking > 0 then
+      for _, c in ipairs(blocking) do
+        table.insert(labels, fmt_conflict(c))
+      end
+      if #actions > 0 then table.insert(labels, "") end
+    end
     for _, action in ipairs(actions) do
       local desc = action.description or (action.fields and action.fields.description) or ""
       if action.type == "add" then
@@ -146,19 +199,82 @@ function M.on_write(bufnr, refresh_fn, do_apply_fn)
       end
     end
 
+    if #actions == 0 and #blocking == 0 then
+      -- Only informational conflicts — apply (no actions to run, but refreshes
+      -- the buffer to pick up the externally-added/removed tasks).
+      do_apply_fn(bufnr, tmpfile, on_delete, { force = false })
+      return
+    end
+
     local preview = table.concat(labels, "\n")
-    vim.ui.select({ "Apply", "Cancel" }, {
-      prompt = string.format("Apply %d change(s)?\n%s", #actions, preview),
-    }, function(choice)
-      if choice ~= "Apply" then
+
+    local choices
+    local prompt
+    if #blocking > 0 then
+      choices = {
+        "Apply safe (skip conflicts)",
+        "Apply force (overwrite external changes)",
+        "Cancel",
+      }
+      prompt = string.format(
+        "%d change(s), %d conflict(s):\n%s",
+        #actions, #blocking, preview)
+    else
+      choices = { "Apply", "Cancel" }
+      prompt = string.format("Apply %d change(s)?\n%s", #actions, preview)
+    end
+
+    vim.ui.select(choices, { prompt = prompt }, function(choice)
+      if not choice or choice == "Cancel" then
         vim.notify("taskwarrior.nvim: cancelled")
         vim.fn.delete(tmpfile)
         return
       end
-      do_apply_fn(bufnr, tmpfile, on_delete)
+      local apply_force = choice == "Apply force (overwrite external changes)"
+      do_apply_fn(bufnr, tmpfile, on_delete, { force = apply_force })
     end)
   else
-    do_apply_fn(bufnr, tmpfile, on_delete)
+    if not force then
+      -- Non-confirm mode: dry-run first. Only BLOCKING conflicts (real merge
+      -- decisions on the same task) abort the write — informational external
+      -- adds/deletes are surfaced and the save proceeds.
+      local dry, derr = do_apply({
+        tmpfile = tmpfile,
+        dry_run = true,
+        on_delete = on_delete,
+        force = false,
+      })
+      if not dry then
+        vim.notify("taskwarrior.nvim: dry-run failed\n" .. (derr or ""), vim.log.levels.ERROR)
+        vim.fn.delete(tmpfile)
+        return
+      end
+      local actions = dry.actions or {}
+      local blocking, info = partition_conflicts(dry.conflicts or {})
+      if #blocking > 0 then
+        local lines_out = { "taskwarrior.nvim: refusing to save — merge conflict on:" }
+        for _, c in ipairs(blocking) do table.insert(lines_out, "  " .. fmt_conflict(c)) end
+        table.insert(lines_out, "Reload the buffer (`:TaskRefresh` or `:e`) and re-apply, or use `:w!` to force.")
+        vim.notify(table.concat(lines_out, "\n"), vim.log.levels.ERROR)
+        vim.fn.delete(tmpfile)
+        return
+      end
+      if #info > 0 then
+        local info_lines = { string.format("taskwarrior.nvim: %d external change(s) detected since render:", #info) }
+        for _, c in ipairs(info) do table.insert(info_lines, "  " .. fmt_conflict(c)) end
+        vim.notify(table.concat(info_lines, "\n"))
+      end
+      -- Zero local actions ⇒ skip the apply pipeline entirely. A clean :w on
+      -- an unchanged buffer feels free of side effects, and even when
+      -- informational external changes were surfaced above, there is nothing
+      -- for `task modify` to do.
+      if #actions == 0 then
+        vim.fn.delete(tmpfile)
+        vim.bo[bufnr].modified = false
+        return
+      end
+    end
+    do_apply_fn(bufnr, tmpfile, on_delete, { force = force })
   end
 end
 
@@ -191,11 +307,14 @@ end
 
 -- do_apply_and_refresh: apply tmpfile and refresh the buffer.
 -- refresh_fn: callback(bufnr) to re-render
-function M.do_apply_and_refresh(bufnr, tmpfile, on_delete, refresh_fn)
+-- opts: optional { force = bool } — force skips external-change protections.
+function M.do_apply_and_refresh(bufnr, tmpfile, on_delete, refresh_fn, opts)
+  opts = opts or {}
   backup_taskdata()
   local summary, err = do_apply({
     tmpfile = tmpfile,
     on_delete = on_delete,
+    force = opts.force == true,
   })
   vim.fn.delete(tmpfile)
   if not summary then
@@ -212,10 +331,14 @@ function M.do_apply_and_refresh(bufnr, tmpfile, on_delete, refresh_fn)
   if (summary.deleted or 0) > 0 then
     msg = msg .. string.format(", x%d deleted", summary.deleted)
   end
+  local n_conflicts = summary.conflicts and #summary.conflicts or 0
+  if n_conflicts > 0 and not opts.force then
+    msg = msg .. string.format(" (%d conflict(s) skipped)", n_conflicts)
+  end
   if summary.errors and #summary.errors > 0 then
     msg = msg .. string.format(" (%d errors!)", #summary.errors)
     vim.notify(msg, vim.log.levels.WARN)
-  else
+  elseif (summary.action_count or 0) > 0 then
     vim.notify(msg)
   end
 

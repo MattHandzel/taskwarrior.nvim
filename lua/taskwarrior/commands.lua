@@ -163,6 +163,94 @@ function M.setup(main, complete_filter)
   vim.api.nvim_create_user_command("TaskFeedback", function()
     require("taskwarrior.feedback").open()
   end, { desc = "Send structured feedback about taskwarrior.nvim" })
+
+  -- Task-level ops
+  vim.api.nvim_create_user_command("TaskAppend", function(o)
+    main.append(o.args)
+  end, { nargs = "*", desc = "Append text to description of task under cursor" })
+
+  vim.api.nvim_create_user_command("TaskPrepend", function(o)
+    main.prepend(o.args)
+  end, { nargs = "*", desc = "Prepend text to description of task under cursor" })
+
+  vim.api.nvim_create_user_command("TaskDuplicate", function()
+    main.duplicate()
+  end, { nargs = 0, desc = "Duplicate the task under cursor" })
+
+  vim.api.nvim_create_user_command("TaskPurge", function(o)
+    main.purge(o.args)
+  end, { nargs = "*", desc = "Irreversibly purge deleted tasks (by filter)" })
+
+  vim.api.nvim_create_user_command("TaskDenotate", function()
+    main.denotate()
+  end, { nargs = 0, desc = "Remove an annotation from the task under cursor" })
+
+  vim.api.nvim_create_user_command("TaskModifyField", function(o)
+    main.modify_field_by_name(o.args)
+  end, {
+    nargs = 1,
+    desc = "Modify a single field of the task under cursor via picker",
+    complete = function() return { "project", "priority", "due", "tag" } end,
+  })
+
+  vim.api.nvim_create_user_command("TaskBulkModify", function(o)
+    main.bulk_modify({ o.line1, o.line2 }, o.args)
+  end, {
+    nargs = "+", range = true,
+    desc = "Apply the same modify to every task in the selected range",
+  })
+
+  -- Named reports (task next / active / overdue / ...)
+  vim.api.nvim_create_user_command("TaskReport", function(o)
+    main.report(o.args)
+  end, {
+    nargs = "?",
+    desc = "Open a named Taskwarrior report",
+    complete = function(arg_lead)
+      local names = main.report_names() or {}
+      local out = {}
+      for _, n in ipairs(names) do
+        if n:sub(1, #arg_lead) == arg_lead then table.insert(out, n) end
+      end
+      return out
+    end,
+  })
+
+  -- Differentiators
+  vim.api.nvim_create_user_command("TaskGraph", function()
+    main.graph()
+  end, { nargs = 0, desc = "Render the dependency graph as a Mermaid diagram" })
+
+  vim.api.nvim_create_user_command("TaskInbox", function()
+    main.inbox()
+  end, { nargs = 0, desc = "Triage recently-added tasks with no project/due/tags" })
+
+  vim.api.nvim_create_user_command("TaskExport", function(o)
+    main.export(o.args)
+  end, { nargs = "?", desc = "Write the rendered task buffer to a markdown file" })
+
+  vim.api.nvim_create_user_command("TaskSync", function()
+    main.sync()
+  end, { nargs = 0, desc = "Run `task sync` with progress and error handling" })
+
+  vim.api.nvim_create_user_command("TaskFloat", function(o)
+    require("taskwarrior.buffer").open_float(o.args)
+  end, {
+    nargs = "*",
+    desc = "Open tasks in a centered floating window",
+    complete = function(arg_lead) return complete_filter(arg_lead) end,
+  })
+
+  -- Nested checkbox → dependency helpers
+  vim.api.nvim_create_user_command("TaskLinkChildren", function()
+    require("taskwarrior.nested").link_children()
+  end, {
+    nargs = 0,
+    desc = "Mark indented tasks below cursor as depends: of the cursor task",
+  })
+  vim.api.nvim_create_user_command("TaskUnlinkChildren", function()
+    require("taskwarrior.nested").unlink_children()
+  end, { nargs = 0, desc = "Remove depends: for indented children of cursor task" })
 end
 
 return M

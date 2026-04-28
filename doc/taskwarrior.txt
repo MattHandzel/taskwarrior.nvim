@@ -145,6 +145,85 @@ Visualisation commands. See |taskwarrior-views|.
 :TaskFeedback           Open a structured feedback buffer. Opt-in; needs
                         `feedback_endpoint` set in |taskwarrior-config|.
 
+                                                              *:TaskAppend*
+                                                             *:TaskPrepend*
+:TaskAppend [text]      Append text to the description of the task under the
+:TaskPrepend [text]     cursor. Without args, prompts for input. Buffer
+                        keymaps `>>` and `<<`.
+
+                                                           *:TaskDuplicate*
+:TaskDuplicate          Duplicate the task under the cursor (fresh UUID,
+                        status=pending, same project/tags/due). Buffer
+                        keymap `yt`.
+
+                                                               *:TaskPurge*
+:TaskPurge [filter]     Irreversibly drop tasks from the database. Without
+                        args, purges the task on the cursor (if it's
+                        deleted) or prompts for a filter. Confirms before
+                        acting. Buffer keymap `dD`.
+
+                                                            *:TaskDenotate*
+:TaskDenotate           Remove an annotation from the task under the cursor.
+                        If the task has more than one annotation, prompts
+                        for which to remove. Buffer keymap `gA`.
+
+                                                         *:TaskModifyField*
+:TaskModifyField <name> Pick a new value for a single field of the task under
+                        the cursor. Known fields: `project`, `priority`,
+                        `due`, `tag`. Falls back to free-form input for
+                        anything else. Also accessible via buffer keymaps
+                        `MM` (project), `Mp` (priority), `MD` (due),
+                        `Mt` (tag).
+
+                                                         *:TaskBulkModify*
+:'<,'>TaskBulkModify <spec>
+                        Apply the same modify spec to every task in the
+                        selected range. Each task is modified in its own
+                        subprocess so Taskwarrior's bulk-confirmation
+                        prompt is sidestepped. Example: >
+                            :'<,'>TaskBulkModify +triage
+<
+                                                              *:TaskReport*
+:TaskReport [name]      Open a named Taskwarrior report. Built-in reports:
+                        `next`, `active`, `overdue`, `recurring`, `waiting`,
+                        `unblocked`, `ready`, `blocked`, `completed`,
+                        `today`, `week`, `noproject`. Without args, opens a
+                        selection prompt.
+
+                                                               *:TaskGraph*
+:TaskGraph              Render the `depends:` graph of pending tasks as a
+                        Mermaid flowchart in a markdown buffer.
+
+                                                               *:TaskInbox*
+:TaskInbox              Walk tasks added in the last 24h with no project, no
+                        due date, and no tags. For each: set project,
+                        schedule, tag, defer, drop, skip, or quit.
+
+                                                              *:TaskExport*
+:TaskExport [path]      Write the current task buffer out as plain markdown
+                        (UUIDs stripped, header comment removed). Useful for
+                        archival or sharing.
+
+                                                                *:TaskSync*
+:TaskSync               Run `task sync` asynchronously with progress and
+                        error reporting. Offers a retry on failure.
+
+                                                               *:TaskFloat*
+:TaskFloat [filter]     Open the task buffer in a centered floating window
+                        instead of a split. `q` to dismiss.
+
+                                                       *:TaskLinkChildren*
+                                                     *:TaskUnlinkChildren*
+:TaskLinkChildren       Treat tasks indented directly below the cursor task
+                        as `depends:` of it. Inverse: :TaskUnlinkChildren
+                        drops those same dependencies.
+
+                                                       *:TaskQueryRefresh*
+:TaskQueryRefresh       Re-render every `<!-- taskmd query: ... -->` block
+                        in the current buffer. Blocks also refresh
+                        automatically on BufReadPost / BufWritePost of
+                        `*.md` / `*.markdown` buffers.
+
 ==============================================================================
 6. KEYBINDINGS                                          *taskwarrior-keybindings*
 
@@ -158,10 +237,20 @@ Buffer-local (inside a task buffer): ~
     o / O               New task line below / above.
     dd                  Mark done (or delete, per |taskwarrior-config|
                         `on_delete`).
-    yy + p              Duplicate a task.
+    yy + p              Duplicate a task (native vim; see also `yt`).
     ga                  Annotate the task under the cursor.
-    gm                  Modify fields interactively.
-    gf                  Show `task info` for the task.
+    gA                  Remove an annotation (|:TaskDenotate|).
+    gm                  Modify fields via free-form input.
+    gf                  Show `task info` in a bordered float (`q` / <Esc>
+                        to dismiss).
+    MM / MP             Pick a project from existing ones (|:TaskModifyField|).
+    Mp                  Pick priority: H / M / L / (clear).
+    MD                  Pick due date: today / tomorrow / eow / custom…
+    Mt                  Pick tag from existing ones (or add a custom).
+    >>                  Append to description (|:TaskAppend|).
+    <<                  Prepend to description (|:TaskPrepend|).
+    yt                  Duplicate task (|:TaskDuplicate|).
+    dD                  Purge task (irreversible, confirms).
     <leader>tf          Change filter interactively.
     <leader>ts          Change sort interactively.
     <leader>tg          Change grouping interactively.
@@ -208,6 +297,7 @@ Full schema with defaults: >
       border_style      = "rounded",
       capture_width     = nil,
       capture_height    = 3,
+      capture_confirm_close = true,  -- prompt before discarding text on <Esc>
       group_separator   = true,
       animation         = true,
       clamp_cursor      = true,
@@ -224,10 +314,193 @@ Full schema with defaults: >
         model              = nil,
         height             = 0.5,
       },
+      -- Per-tag highlight overrides (see |taskwarrior-tag-colors|).
+      tag_colors = {},                -- e.g. { ["+urgent"] = "ErrorMsg" }
+      -- Urgency breakpoints for virtual text + views (|taskwarrior-urgency-colors|).
+      urgency_colors = {
+        { threshold = 8, hl = "TaskPriorityH" },
+        { threshold = 4, hl = "TaskPriorityM" },
+        { threshold = 0, hl = "TaskPriorityL" },
+      },
+      -- Category gates for vim.notify (|taskwarrior-notifications|).
+      notifications = {
+        start = true, stop = true, modify = true, apply = true,
+        review = true, capture = true, delegate = true, view = true,
+        error = true, warn = true,
+      },
+      -- Auto-stop running task timers when nvim is idle (|taskwarrior-granulation|).
+      granulation = {
+        enabled = false,
+        idle_ms = 5 * 60 * 1000,
+        notify_on_stop = true,
+      },
+      -- Slot functions for the task-buffer header stats line.
+      header_stats = nil,             -- or { fn, fn, ... }
+      -- Nerd-font icons: true|nil (auto), false (force ASCII), or
+      -- partial override table. See |taskwarrior-icons|.
+      icons = true,
+      -- Render "today" / "tomorrow" / "in 3d · Fri" as virt-text.
+      relative_dates = true,
+      -- Show the numeric urgency score as a right-side chip.
+      show_urgency = false,
+      -- If show_urgency is true, prefix with an 8-band unicode bar.
+      urgency_bar = true,
+      -- Render an OVERDUE pill for tasks past their due date.
+      overdue_badge = false,
     })
 <
 
 See |taskwarrior-safety| for auto_backup and |taskwarrior-delegate| for delegate.flags.
+
+                                                        *taskwarrior-tag-colors*
+Per-tag colors ~
+
+Override the highlight group used for a specific tag: >
+    require("taskwarrior").setup({
+      tag_colors = {
+        ["+urgent"]  = "ErrorMsg",
+        ["+someday"] = "Comment",
+        ["+waiting"] = { fg = "#9399b2", italic = true },  -- inline hl spec
+      },
+    })
+<
+Values may be either a highlight-group name (string) or a table spec passed
+to |nvim_set_hl()|. Unmatched tags fall through to the default `TaskTag`
+highlight.
+
+                                                   *taskwarrior-urgency-colors*
+Urgency color breakpoints ~
+
+The virtual-text urgency number and the view renderers pick a highlight by
+matching the urgency against a list of breakpoints (first match wins): >
+    require("taskwarrior").setup({
+      urgency_colors = {
+        { threshold = 12, hl = "ErrorMsg" },
+        { threshold = 6,  hl = "WarningMsg" },
+        { threshold = 0,  hl = "Comment" },
+      },
+    })
+<
+
+                                                   *taskwarrior-notifications*
+Silencing notifications ~
+
+Turn off specific categories with:  >
+    require("taskwarrior").setup({
+      notifications = { apply = false, modify = false },
+    })
+<
+Recognized categories: `start`, `stop`, `modify`, `apply`, `review`,
+`capture`, `delegate`, `view`, `error`, `warn`. Setting an unknown key is
+a setup() error.
+
+                                                          *taskwarrior-icons*
+Icons (Nerd Font) ~
+
+taskwarrior.nvim renders task lines with nerd-font glyphs by default
+(`icons = true`). Set `icons = false` to force ASCII (accessibility
+path) or `icons = "auto"` to detect via `vim.g.have_nerd_font`. The
+default-on behavior matches the option's wording and avoids the
+common gotcha where users with an NF terminal forget to set the
+global flag and see no icons. Override slots individually: >
+    require("taskwarrior").setup({
+      icons = {
+        priority_h   = "!!!",    -- any slot in lua/taskwarrior/icons.lua
+        status_started = ">>",
+      },
+    })
+<
+Or force the full ASCII set (accessibility path): >
+    require("taskwarrior").setup({ icons = false })
+<
+Slots (see `lua/taskwarrior/icons.lua`): `checkbox_pending`,
+`checkbox_started`, `checkbox_done`, `checkbox_blocked`, `priority_h`,
+`priority_m`, `priority_l`, `status_started`, `status_overdue`,
+`status_note`, `project`, `tag`, `due_normal`, `due_today`,
+`due_overdue`, `recur`, `effort`, `urg_1`..`urg_8`, `badge_overdue`.
+
+Checkbox slots are painted as a 5-cell `virt_text` overlay over the
+literal `- [ ]` / `- [>]` / `- [x]` in the source. The markdown text
+itself is never rewritten — the Taskwarrior round-trip parser depends
+on those literals. The overlay is automatically suppressed when no
+nerd font is available AND no slot override is configured (the ASCII
+fallback would just redraw the source).
+
+                                                 *taskwarrior-relative-dates*
+Contextual due-date labels ~
+
+Each `due:YYYY-MM-DD` field in a task line gets a right-aligned
+virt-text label (`today`, `tomorrow`, `in 3d · Fri`, `next Mon`,
+`2d overdue`, ...). The literal date in the buffer text is never
+rewritten — `:w` continues to round-trip correctly.
+
+Disable: `relative_dates = false`.
+
+                                                      *taskwarrior-urgency-bar*
+Urgency display ~
+
+**Off by default.** Most users find the relative-date label and
+sign-column priority glyphs more actionable than a raw urgency
+score. Enable with: >
+    require("taskwarrior").setup({ show_urgency = true })
+<
+When enabled, each task's urgency is rendered as an 8-band unicode
+block (`▁▂▃▄▅▆▇█`) followed by the numeric score. Suppress the bar
+and keep the bare number with `urgency_bar = false`.
+
+                                                    *taskwarrior-overdue-badge*
+OVERDUE pill ~
+
+**Off by default.** The relative-date label already says "Nd overdue"
+in the same slot, so the pill is mostly redundant. Enable for a
+high-contrast alarm effect: >
+    require("taskwarrior").setup({ overdue_badge = true })
+<
+
+                                                    *taskwarrior-granulation*
+Auto-stop on idle ~
+
+When a Taskwarrior task is `start`ed (active), users often forget to stop
+it. Enable the idle watcher: >
+    require("taskwarrior").setup({
+      granulation = { enabled = true, idle_ms = 300000 },  -- 5 min
+    })
+<
+After `idle_ms` with no cursor/focus activity, every active task is
+`task <uuid> stop`ped and any open task buffers refresh. A notification
+fires when tasks are auto-stopped unless `notify_on_stop = false`.
+
+                                                       *taskwarrior-reports*
+Named reports ~
+
+`:TaskReport <name>` opens the Taskwarrior report named `<name>`:
+
+    next         status:pending, sorted by urgency
+    active       currently started (+ACTIVE)
+    overdue      pending + due date in the past
+    ready        pending, not blocked, not waiting
+    unblocked    pending, not blocked
+    waiting      scheduled for later (+WAITING)
+    recurring    recurring masters
+    blocked      pending + blocked
+    completed    already done, newest first
+    today        due before tomorrow
+    week         due before end-of-week
+    noproject    pending tasks with no project set
+
+                                                  *taskwarrior-query-blocks*
+Embedded query blocks in markdown ~
+
+Any markdown buffer can host a live Taskwarrior view via an HTML-comment
+block: >
+    <!-- taskmd query: status:pending +urgent | sort:due+ | group:project -->
+    (content auto-filled)
+    <!-- taskmd endquery -->
+<
+Blocks refresh on BufReadPost / BufWritePost, and on demand via
+`:TaskQueryRefresh`. The block body is read-only — to edit a task, open
+`:Task <filter>` (or use the Telescope picker). Multiple blocks per buffer
+are supported.
 
 ==============================================================================
 9. VIEWS                                                      *taskwarrior-views*
@@ -354,6 +627,62 @@ Completion popup doesn't appear ~
     :TaskAdd uses omnifunc. Press <C-x><C-o> manually; <Tab> is
     pre-wired to trigger it. If nothing appears, run `:checkhealth taskwarrior`
     to confirm Taskwarrior is reachable.
+
+==============================================================================
+                                                     *taskwarrior-statusline*
+STATUSLINE / LUALINE                                                       ~
+
+taskwarrior.nvim ships a ready-to-use statusline component at
+`lua/taskwarrior/statusline.lua`. It renders the active task, overdue count,
+and next upcoming due date, cached for 15s so it never stalls your prompt.
+
+Lualine: >
+    require("lualine").setup({
+      sections = {
+        lualine_x = {
+          require("taskwarrior.statusline").component,
+          "filetype",
+        },
+      },
+    })
+<
+Heirline: >
+    local tw = require("taskwarrior.statusline")
+    {
+      provider = function() return tw.render() end,
+      update = { "User", pattern = "TaskwarriorRefresh" },
+    }
+<
+Raw statusline: >
+    vim.o.statusline = '%!v:lua.require("taskwarrior.statusline").render()'
+<
+Invalidate the cache explicitly (e.g. after external task CLI edits): >
+    require("taskwarrior.statusline").invalidate()
+<
+
+                                                     *taskwarrior-dashboard*
+ALPHA / DASHBOARD WIDGETS                                                  ~
+
+`lua/taskwarrior/dashboard.lua` exposes `top_urgent(n)` — returns a list of
+pretty-printed task lines for use in a startup screen. Safe to call at
+UIEnter: if Taskwarrior isn't installed or the database is empty it returns
+a single informational line.
+
+alpha.nvim: >
+    local dashboard = require("alpha.themes.dashboard")
+    dashboard.section.footer.val =
+      require("taskwarrior.dashboard").top_urgent(5)
+<
+dashboard.nvim: >
+    require("dashboard").setup({
+      custom_section = {
+        tasks = {
+          description = require("taskwarrior.dashboard").top_urgent(5),
+          command = ":Task",
+        },
+      },
+    })
+<
 
 ==============================================================================
 17. LICENSE                                                *taskwarrior-license*
